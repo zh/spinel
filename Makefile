@@ -3,7 +3,7 @@
 # Usage:
 #   make deps      # Fetch and build dependencies (prism)
 #   make           # Build the spinel compiler
-#   make test      # Compile bm_so_mandelbrot.rb and verify output
+#   make test      # Compile examples/bm_so_mandelbrot.rb and verify output
 
 # Configuration
 PRISM_VERSION ?= 1.4.0
@@ -44,10 +44,10 @@ $(PRISM_LIB):
 	@echo "Building prism..."
 	cd $(PRISM_DIR) && make
 
-# Test: compile bm_so_mandelbrot.rb and verify output
+# Test: compile examples/bm_so_mandelbrot.rb and verify output
 test: spinel
-	@echo "=== Compiling bm_so_mandelbrot.rb ==="
-	./spinel --source=bm_so_mandelbrot.rb --output=mandelbrot_aot.c
+	@echo "=== Compiling examples/bm_so_mandelbrot.rb ==="
+	./spinel --source=examples/bm_so_mandelbrot.rb --output=mandelbrot_aot.c
 	@echo "=== Compiling generated C code ==="
 	$(CC) -O2 -ffunction-sections -Wl,--gc-sections \
 		mandelbrot_aot.c \
@@ -57,7 +57,7 @@ test: spinel
 	@echo "=== Running AOT binary ==="
 	./mandelbrot > mandelbrot_aot.pbm
 	@echo "=== Running CRuby reference ==="
-	ruby bm_so_mandelbrot.rb > mandelbrot_ruby.pbm
+	ruby examples/bm_so_mandelbrot.rb > mandelbrot_ruby.pbm
 	@echo "=== Comparing output ==="
 	@if diff mandelbrot_aot.pbm mandelbrot_ruby.pbm > /dev/null 2>&1; then \
 		echo "SUCCESS: Output matches!"; \
@@ -68,7 +68,7 @@ test: spinel
 
 # Generate C code only (no mruby compilation)
 gen: spinel
-	./spinel --source=bm_so_mandelbrot.rb --output=mandelbrot_aot.c
+	./spinel --source=examples/bm_so_mandelbrot.rb --output=mandelbrot_aot.c
 	@echo "Generated mandelbrot_aot.c"
 
 clean:
