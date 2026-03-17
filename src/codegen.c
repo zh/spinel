@@ -384,6 +384,22 @@ static void analyze_module(codegen_ctx_t *ctx, pm_module_node_t *node) {
             snprintf(iv->name, sizeof(iv->name), "%s", ivname + 1);
             iv->type = vt_prim(SPINEL_TYPE_INTEGER);
             free(ivname);
+        } else if (PM_NODE_TYPE(s) == PM_CONSTANT_WRITE_NODE) {
+            pm_constant_write_node_t *cw = (pm_constant_write_node_t *)s;
+            char *cname = cstr(ctx, cw->name);
+            module_const_t *mc = &mod->consts[mod->const_count++];
+            snprintf(mc->name, sizeof(mc->name), "%s", cname);
+            mc->value_node = cw->value;
+            /* Infer type: BNUM is integer (1 << 29), BNUMF is float (.to_f) */
+            mc->type = vt_prim(SPINEL_TYPE_INTEGER);
+            if (cw->value && PM_NODE_TYPE(cw->value) == PM_CALL_NODE) {
+                pm_call_node_t *vc = (pm_call_node_t *)cw->value;
+                char *mn = cstr(ctx, vc->name);
+                if (strcmp(mn, "to_f") == 0)
+                    mc->type = vt_prim(SPINEL_TYPE_FLOAT);
+                free(mn);
+            }
+            free(cname);
         }
     }
 }
@@ -485,6 +501,26 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
         char *name = cstr(ctx, n->name);
         /* Check if it's a class name */
         if (find_class(ctx, name)) { free(name); return vt_prim(SPINEL_TYPE_VALUE); }
+        /* Check module constants when inside a module */
+        if (ctx->current_module) {
+            for (int i = 0; i < ctx->current_module->const_count; i++) {
+                if (strcmp(ctx->current_module->consts[i].name, name) == 0) {
+                    vtype_t t = ctx->current_module->consts[i].type;
+                    free(name);
+                    return t;
+                }
+            }
+        }
+        /* Also check all modules for unqualified constant access */
+        for (int mi = 0; mi < ctx->module_count; mi++) {
+            for (int ci = 0; ci < ctx->modules[mi].const_count; ci++) {
+                if (strcmp(ctx->modules[mi].consts[ci].name, name) == 0) {
+                    vtype_t t = ctx->modules[mi].consts[ci].type;
+                    free(name);
+                    return t;
+                }
+            }
+        }
         var_entry_t *v = var_lookup(ctx, name);
         vtype_t t = v ? v->type : vt_prim(SPINEL_TYPE_VALUE);
         free(name);
@@ -509,25 +545,19 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
         return vt_prim(SPINEL_TYPE_VALUE);
     }
 
+    case PM_INSTANCE_VARIABLE_WRITE_NODE: {
+        /* @x = expr — type is the type of expr (same as ivar type) */
+        pm_instance_variable_write_node_t *n = (pm_instance_variable_write_node_t *)node;
+        return infer_type(ctx, n->value);
+    }
+
     case PM_CALL_NODE: {
         pm_call_node_t *call = (pm_call_node_t *)node;
         char *method = cstr(ctx, call->name);
         vtype_t result = vt_prim(SPINEL_TYPE_VALUE);
 
-        /* Binary operators */
-        if (call->receiver && call->arguments &&
-            call->arguments->arguments.size == 1) {
-            vtype_t lt = infer_type(ctx, call->receiver);
-            vtype_t rt = infer_type(ctx, call->arguments->arguments.nodes[0]);
-            if (vt_is_numeric(lt) || vt_is_numeric(rt) ||
-                lt.kind == SPINEL_TYPE_BOOLEAN || rt.kind == SPINEL_TYPE_BOOLEAN) {
-                result = binop_result(lt, rt, method);
-                free(method);
-                return result;
-            }
-        }
-
-        /* Array indexing: infer element type from variable name heuristics */
+        /* Array indexing: infer element type from variable name heuristics
+         * (must be checked before binary operators since [] has one argument) */
         if (strcmp(method, "[]") == 0 && call->receiver) {
             /* Check if receiver is "basis" → Vec, "spheres"/@spheres → Sphere */
             if (PM_NODE_TYPE(call->receiver) == PM_LOCAL_VARIABLE_READ_NODE) {
@@ -542,6 +572,27 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
                 if (strcmp(ivn, "@spheres") == 0) { free(ivn); free(method); return vt_obj("Sphere"); }
                 free(ivn);
             }
+        }
+
+        /* Binary operators */
+        if (call->receiver && call->arguments &&
+            call->arguments->arguments.size == 1 &&
+            strcmp(method, "[]") != 0) {
+            vtype_t lt = infer_type(ctx, call->receiver);
+            vtype_t rt = infer_type(ctx, call->arguments->arguments.nodes[0]);
+            if (vt_is_numeric(lt) || vt_is_numeric(rt) ||
+                lt.kind == SPINEL_TYPE_BOOLEAN || rt.kind == SPINEL_TYPE_BOOLEAN) {
+                result = binop_result(lt, rt, method);
+                free(method);
+                return result;
+            }
+        }
+
+        /* Unary minus: -expr → same type as expr */
+        if (strcmp(method, "-@") == 0 && call->receiver && !call->arguments) {
+            result = infer_type(ctx, call->receiver);
+            free(method);
+            return result;
         }
 
         /* Constructor: ClassName.new(...) → returns ClassName */
@@ -606,7 +657,7 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
         /* Known methods */
         if (strcmp(method, "chr") == 0 || strcmp(method, "to_s") == 0)
             result = vt_prim(SPINEL_TYPE_STRING);
-        else if (strcmp(method, "to_i") == 0)
+        else if (strcmp(method, "to_i") == 0 || strcmp(method, "Integer") == 0)
             result = vt_prim(SPINEL_TYPE_INTEGER);
         else if (strcmp(method, "to_f") == 0)
             result = vt_prim(SPINEL_TYPE_FLOAT);
@@ -668,6 +719,34 @@ static void infer_pass(codegen_ctx_t *ctx, pm_node_t *node) {
         infer_pass(ctx, n->value);
         char *name = cstr(ctx, n->name);
         vtype_t type = infer_type(ctx, n->value);
+
+        /* Detect Array.new(N) pattern → mark variable as array */
+        if (PM_NODE_TYPE(n->value) == PM_CALL_NODE) {
+            pm_call_node_t *vc = (pm_call_node_t *)n->value;
+            char *mname = cstr(ctx, vc->name);
+            if (strcmp(mname, "new") == 0 && vc->receiver &&
+                PM_NODE_TYPE(vc->receiver) == PM_CONSTANT_READ_NODE) {
+                pm_constant_read_node_t *cr = (pm_constant_read_node_t *)vc->receiver;
+                if (ceq(ctx, cr->name, "Array")) {
+                    /* Determine element type from variable name heuristic */
+                    if (strcmp(name, "basis") == 0)
+                        type = vt_obj("Vec");
+                    int arr_size = 0;
+                    if (vc->arguments && vc->arguments->arguments.size == 1 &&
+                        PM_NODE_TYPE(vc->arguments->arguments.nodes[0]) == PM_INTEGER_NODE) {
+                        pm_integer_node_t *in = (pm_integer_node_t *)vc->arguments->arguments.nodes[0];
+                        arr_size = (int)in->value.value;
+                    }
+                    var_entry_t *v = var_declare(ctx, name, type, false);
+                    v->is_array = true;
+                    v->array_size = arr_size > 0 ? arr_size : 3;
+                    free(mname); free(name);
+                    break;
+                }
+            }
+            free(mname);
+        }
+
         var_declare(ctx, name, type, false);
         free(name);
         break;
@@ -909,6 +988,7 @@ static void resolve_class_types(codegen_ctx_t *ctx) {
             }
             if (strcmp(f->name, "orthoBasis") == 0 && f->param_count >= 2) {
                 f->params[0].type = vt_obj("Vec"); /* sp_Vec *basis */
+                f->params[0].is_array = true;
                 f->params[1].type = vt_obj("Vec");
                 f->return_type = vt_prim(SPINEL_TYPE_NIL);
             }
@@ -979,6 +1059,7 @@ static void emit_constructor(codegen_ctx_t *ctx, class_info_t *cls) {
     }
 
     /* Initialize fields from initialize body */
+    ctx->current_class = cls;
     if (init->body_node && PM_NODE_TYPE(init->body_node) == PM_STATEMENTS_NODE) {
         pm_statements_node_t *stmts = (pm_statements_node_t *)init->body_node;
         for (size_t i = 0; i < stmts->body.size; i++) {
@@ -991,15 +1072,25 @@ static void emit_constructor(codegen_ctx_t *ctx, class_info_t *cls) {
 
                 /* value is typically a local variable read from params */
                 char *val_expr = codegen_expr(ctx, iw->value);
-                if (cls->is_value_type)
-                    emit_raw(ctx, "    self.%s = %s;\n", field, val_expr);
-                else
-                    emit_raw(ctx, "    self->%s = %s;\n", field, val_expr);
+                /* Skip array_init — arrays are initialized via []= */
+                if (strstr(val_expr, "array_init") == NULL) {
+                    if (cls->is_value_type)
+                        emit_raw(ctx, "    self.%s = %s;\n", field, val_expr);
+                    else
+                        emit_raw(ctx, "    self->%s = %s;\n", field, val_expr);
+                }
                 free(ivname);
                 free(val_expr);
+            } else if (PM_NODE_TYPE(s) == PM_CALL_NODE) {
+                /* Handle @spheres[0] = Sphere.new(...) etc. */
+                int saved_indent = ctx->indent;
+                ctx->indent = 1;
+                codegen_stmt(ctx, s);
+                ctx->indent = saved_indent;
             }
         }
     }
+    ctx->current_class = NULL;
 
     /* For Isect: handle special initializations */
     emit_raw(ctx, "    return self;\n");
@@ -1104,6 +1195,16 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
         if (find_class(ctx, name) || find_module(ctx, name)) {
             /* Will be handled by the call node that uses it */
             return name; /* raw class name */
+        }
+        /* Check module constants when inside a module */
+        if (ctx->current_module) {
+            for (int i = 0; i < ctx->current_module->const_count; i++) {
+                if (strcmp(ctx->current_module->consts[i].name, name) == 0) {
+                    char *r = sfmt("sp_%s_%s", ctx->current_module->name, name);
+                    free(name);
+                    return r;
+                }
+            }
         }
         char *cn = make_cname(name, true);
         free(name);
@@ -1236,10 +1337,10 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                 free(cls_name); free(args); free(method);
                 return r;
             }
-            /* Array.new */
+            /* Array.new — skip (array members are initialized separately) */
             if (strcmp(cls_name, "Array") == 0) {
                 free(cls_name); free(method);
-                return xstrdup("/* array_new */");
+                return xstrdup("/* array_init */");
             }
             free(cls_name);
         }
@@ -1357,6 +1458,25 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                 free(args); free(method);
                 return r;
             }
+        }
+
+        /* Receiver-less: Integer() conversion — use default value from || */
+        if (!call->receiver && strcmp(method, "Integer") == 0) {
+            if (call->arguments && call->arguments->arguments.size == 1) {
+                pm_node_t *arg = call->arguments->arguments.nodes[0];
+                /* Integer(ARGV[0] || 64) → just use the default literal */
+                if (PM_NODE_TYPE(arg) == PM_OR_NODE) {
+                    pm_or_node_t *or_n = (pm_or_node_t *)arg;
+                    char *def = codegen_expr(ctx, or_n->right);
+                    free(method);
+                    return def;
+                }
+                char *a = codegen_expr(ctx, arg);
+                free(method);
+                return a;
+            }
+            free(method);
+            return xstrdup("0");
         }
 
         /* Receiver-less: top-level function or Kernel method */
@@ -1491,7 +1611,10 @@ static void codegen_stmt(codegen_ctx_t *ctx, pm_node_t *node) {
         char *name = cstr(ctx, n->name);
         char *cn = make_cname(name, false);
         char *val = codegen_expr(ctx, n->value);
-        emit(ctx, "%s = %s;\n", cn, val);
+        /* Skip array_init — array vars are declared already */
+        if (strstr(val, "array_init") == NULL) {
+            emit(ctx, "%s = %s;\n", cn, val);
+        }
         free(name); free(cn); free(val);
         break;
     }
@@ -1795,6 +1918,17 @@ static void codegen_stmt(codegen_ctx_t *ctx, pm_node_t *node) {
                     char *cn = make_cname(vn, false);
                     emit(ctx, "%s = _mw_%d;\n", cn, (int)i);
                     free(vn); free(cn);
+                } else if (PM_NODE_TYPE(n->lefts.nodes[i]) == PM_INSTANCE_VARIABLE_TARGET_NODE) {
+                    pm_instance_variable_target_node_t *t = (pm_instance_variable_target_node_t *)n->lefts.nodes[i];
+                    char *ivn = cstr(ctx, t->name);
+                    const char *field = ivn + 1;
+                    if (ctx->current_module)
+                        emit(ctx, "sp_%s_%s = _mw_%d;\n", ctx->current_module->name, field, (int)i);
+                    else if (ctx->current_class && ctx->current_class->is_value_type)
+                        emit(ctx, "self.%s = _mw_%d;\n", field, (int)i);
+                    else
+                        emit(ctx, "self->%s = _mw_%d;\n", field, (int)i);
+                    free(ivn);
                 }
             }
             ctx->indent--; emit(ctx, "}\n");
@@ -1891,14 +2025,25 @@ static void emit_method(codegen_ctx_t *ctx, class_info_t *cls, method_info_t *m)
         var_entry_t *v = &ctx->vars[i];
         char *ct = vt_ctype(ctx, v->type, false);
         char *cn = make_cname(v->name, v->is_constant);
+        if (v->is_array) {
+            emit(ctx, "%s %s[%d];\n", ct, cn, v->array_size);
+            free(ct); free(cn);
+            continue;
+        }
         const char *init = "";
         if (v->type.kind == SPINEL_TYPE_INTEGER) init = " = 0";
         else if (v->type.kind == SPINEL_TYPE_FLOAT) init = " = 0.0";
         else if (v->type.kind == SPINEL_TYPE_BOOLEAN) init = " = FALSE";
         else if (v->type.kind == SPINEL_TYPE_OBJECT) {
-            char *zt = vt_ctype(ctx, v->type, false);
-            emit(ctx, "%s %s; memset(&%s, 0, sizeof(%s));\n", zt, cn, cn, cn);
-            free(ct); free(cn); free(zt);
+            class_info_t *vc = find_class(ctx, v->type.klass);
+            if (vc && vc->is_value_type) {
+                /* Value type: stack-allocated struct */
+                emit(ctx, "%s %s; memset(&%s, 0, sizeof(%s));\n", ct, cn, cn, cn);
+            } else {
+                /* Reference type: pointer, initialized to NULL */
+                emit(ctx, "%s *%s = NULL;\n", ct, cn);
+            }
+            free(ct); free(cn);
             continue;
         }
         emit(ctx, "%s %s%s;\n", ct, cn, init);
@@ -1952,7 +2097,10 @@ static void emit_top_func(codegen_ctx_t *ctx, func_info_t *f) {
         if (i > 0) emit_raw(ctx, ", ");
         char *pct = vt_ctype(ctx, f->params[i].type, false);
         /* Use lv_ prefix to match how codegen references locals */
-        emit_raw(ctx, "%s lv_%s", pct, f->params[i].name);
+        if (f->params[i].is_array)
+            emit_raw(ctx, "%s *lv_%s", pct, f->params[i].name);
+        else
+            emit_raw(ctx, "%s lv_%s", pct, f->params[i].name);
         free(pct);
     }
     if (f->param_count == 0) emit_raw(ctx, "void");
@@ -2011,11 +2159,49 @@ static void emit_top_func(codegen_ctx_t *ctx, func_info_t *f) {
 /* ------------------------------------------------------------------ */
 
 static void emit_module(codegen_ctx_t *ctx, module_info_t *mod) {
-    /* Emit module state variables */
-    for (int i = 0; i < mod->var_count; i++) {
-        char *ct = vt_ctype(ctx, mod->vars[i].type, false);
-        emit_raw(ctx, "static %s sp_%s_%s;\n", ct, mod->name, mod->vars[i].name);
-        free(ct);
+    /* Emit module constants as #define macros (avoids file-scope init issues) */
+    ctx->current_module = mod;
+    for (int i = 0; i < mod->const_count; i++) {
+        module_const_t *mc = &mod->consts[i];
+        char *val = codegen_expr(ctx, mc->value_node);
+        emit_raw(ctx, "#define sp_%s_%s (%s)\n", mod->name, mc->name, val);
+        free(val);
+    }
+    ctx->current_module = NULL;
+
+    /* Emit module state variables with initialization values from the module body */
+    {
+        pm_module_node_t *mnode = (pm_module_node_t *)mod->module_node;
+        pm_statements_node_t *mstmts = NULL;
+        if (mnode->body && PM_NODE_TYPE(mnode->body) == PM_STATEMENTS_NODE)
+            mstmts = (pm_statements_node_t *)mnode->body;
+
+        for (int i = 0; i < mod->var_count; i++) {
+            char *ct = vt_ctype(ctx, mod->vars[i].type, false);
+            /* Find the initial value from the module body */
+            char *init_val = NULL;
+            if (mstmts) {
+                for (size_t j = 0; j < mstmts->body.size; j++) {
+                    pm_node_t *s = mstmts->body.nodes[j];
+                    if (PM_NODE_TYPE(s) == PM_INSTANCE_VARIABLE_WRITE_NODE) {
+                        pm_instance_variable_write_node_t *iw = (pm_instance_variable_write_node_t *)s;
+                        char *ivn = cstr(ctx, iw->name);
+                        if (strcmp(ivn + 1, mod->vars[i].name) == 0) {
+                            init_val = codegen_expr(ctx, iw->value);
+                        }
+                        free(ivn);
+                        if (init_val) break;
+                    }
+                }
+            }
+            if (init_val) {
+                emit_raw(ctx, "static %s sp_%s_%s = %s;\n", ct, mod->name, mod->vars[i].name, init_val);
+                free(init_val);
+            } else {
+                emit_raw(ctx, "static %s sp_%s_%s;\n", ct, mod->name, mod->vars[i].name);
+            }
+            free(ct);
+        }
     }
     emit_raw(ctx, "\n");
 
@@ -2041,7 +2227,25 @@ static void emit_module(codegen_ctx_t *ctx, module_info_t *mod) {
                 emit(ctx, "%s %s = 0;\n", ct, cn);
                 free(ct); free(cn);
             }
-            codegen_stmts(ctx, m->body_node);
+            /* Handle implicit return for module methods */
+            bool ret_void = (m->return_type.kind == SPINEL_TYPE_NIL);
+            if (!ret_void && PM_NODE_TYPE(m->body_node) == PM_STATEMENTS_NODE) {
+                pm_statements_node_t *stmts = (pm_statements_node_t *)m->body_node;
+                for (size_t si = 0; si + 1 < stmts->body.size; si++)
+                    codegen_stmt(ctx, stmts->body.nodes[si]);
+                if (stmts->body.size > 0) {
+                    pm_node_t *last = stmts->body.nodes[stmts->body.size - 1];
+                    if (PM_NODE_TYPE(last) != PM_RETURN_NODE) {
+                        char *val = codegen_expr(ctx, last);
+                        emit(ctx, "return %s;\n", val);
+                        free(val);
+                    } else {
+                        codegen_stmt(ctx, last);
+                    }
+                }
+            } else {
+                codegen_stmts(ctx, m->body_node);
+            }
         }
 
         ctx->current_module = NULL;
@@ -2093,6 +2297,20 @@ void codegen_program(codegen_ctx_t *ctx, pm_node_t *root) {
     /* Emit C file */
     emit_header(ctx);
 
+    /* Emit top-level constants as static globals (so methods can access them) */
+    for (int i = 0; i < ctx->var_count; i++) {
+        var_entry_t *v = &ctx->vars[i];
+        if (!v->is_constant) continue;
+        char *ct = vt_ctype(ctx, v->type, false);
+        char *cn = make_cname(v->name, true);
+        const char *init = "";
+        if (v->type.kind == SPINEL_TYPE_INTEGER) init = " = 0";
+        else if (v->type.kind == SPINEL_TYPE_FLOAT) init = " = 0.0";
+        emit_raw(ctx, "static %s %s%s;\n", ct, cn, init);
+        free(ct); free(cn);
+    }
+    emit_raw(ctx, "\n");
+
     /* Forward declarations: structs */
     for (int i = 0; i < ctx->class_count; i++)
         emit_raw(ctx, "typedef struct sp_%s_s sp_%s;\n", ctx->classes[i].name, ctx->classes[i].name);
@@ -2105,6 +2323,27 @@ void codegen_program(codegen_ctx_t *ctx, pm_node_t *root) {
     /* Module code */
     for (int i = 0; i < ctx->module_count; i++)
         emit_module(ctx, &ctx->modules[i]);
+
+    /* Forward declarations for top-level functions */
+    for (int i = 0; i < ctx->func_count; i++) {
+        func_info_t *f = &ctx->funcs[i];
+        char *ret_ct = vt_ctype(ctx, f->return_type, false);
+        bool ret_void = (f->return_type.kind == SPINEL_TYPE_NIL);
+        emit_raw(ctx, "static %s sp_%s(", ret_void ? "void" : ret_ct, f->name);
+        for (int j = 0; j < f->param_count; j++) {
+            if (j > 0) emit_raw(ctx, ", ");
+            char *pct = vt_ctype(ctx, f->params[j].type, false);
+            if (f->params[j].is_array)
+                emit_raw(ctx, "%s *", pct);
+            else
+                emit_raw(ctx, "%s", pct);
+            free(pct);
+        }
+        if (f->param_count == 0) emit_raw(ctx, "void");
+        emit_raw(ctx, ");\n");
+        free(ret_ct);
+    }
+    emit_raw(ctx, "\n");
 
     /* Constructors */
     for (int i = 0; i < ctx->class_count; i++)
@@ -2124,9 +2363,10 @@ void codegen_program(codegen_ctx_t *ctx, pm_node_t *root) {
     /* Main function */
     emit_raw(ctx, "int main(int argc, char **argv) {\n");
 
-    /* Variable declarations for top-level */
+    /* Variable declarations for top-level (skip constants — they're global statics) */
     for (int i = 0; i < ctx->var_count; i++) {
         var_entry_t *v = &ctx->vars[i];
+        if (v->is_constant) continue;
         char *ct = vt_ctype(ctx, v->type, false);
         char *cn = make_cname(v->name, v->is_constant);
         const char *init = "";

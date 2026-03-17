@@ -41,6 +41,7 @@ typedef struct {
 typedef struct {
     char name[64];
     vtype_t type;
+    bool is_array;
 } param_info_t;
 
 /* Method info */
@@ -70,6 +71,13 @@ typedef struct {
     pm_node_t *class_node; /* AST node of the class definition */
 } class_info_t;
 
+/* Module constant info */
+typedef struct {
+    char name[64];
+    vtype_t type;
+    pm_node_t *value_node;  /* AST node for the value expression */
+} module_const_t;
+
 /* Module info (for module Rand etc.) */
 typedef struct {
     char name[64];
@@ -77,6 +85,8 @@ typedef struct {
     int method_count;
     ivar_info_t vars[MAX_IVARS];  /* module-level instance vars */
     int var_count;
+    module_const_t consts[MAX_IVARS]; /* module-level constants */
+    int const_count;
     pm_node_t *module_node;
 } module_info_t;
 
@@ -96,6 +106,8 @@ typedef struct {
     vtype_t type;
     bool declared;
     bool is_constant;
+    bool is_array;
+    int array_size;
 } var_entry_t;
 
 #define MAX_VARS 256

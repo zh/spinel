@@ -105,9 +105,10 @@ int main(int argc, char **argv) {
     }
 
     /* Generate C code */
-    codegen_ctx_t ctx;
-    codegen_init(&ctx, &parser, out);
-    codegen_program(&ctx, root);
+    codegen_ctx_t *ctx = (codegen_ctx_t *)calloc(1, sizeof(codegen_ctx_t));
+    codegen_init(ctx, &parser, out);
+    codegen_program(ctx, root);
+    free(ctx);
 
     /* Cleanup */
     if (out != stdout) fclose(out);
