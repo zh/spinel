@@ -75,42 +75,80 @@ For `bm_ao_render.rb`, the compiler:
 
 | Feature | Example |
 |---------|---------|
+| **Classes & OOP** | |
 | Classes with instance variables | `class Vec; def initialize(x,y,z); @x=x; end; end` |
+| Inheritance | `class Dog < Animal` |
+| `super` | `super(name)` in child initialize/methods |
 | Method definitions | `def vadd(b); Vec.new(@x+b.x, ...); end` |
 | Getters/setters (inlined) | `def x; @x; end` / `def x=(v); @x=v; end` |
 | Object construction | `Vec.new(1.0, 2.0, 3.0)` |
 | Method calls on typed objects | `ray.org.vsub(@center)` |
 | Modules with state | `module Rand; @x = 123; def self.rand; ...; end; end` |
-| Local variables, constants | `size = 600`, `ITER = 49` |
-| `while` loops | `while x <= count_size` |
+| **Blocks & Closures** | |
+| `yield` | `def my_iter(n); yield i; end` |
+| Blocks at call sites | `my_iter(10) do \|i\| total += i end` |
+| `Array#each/map/select` | `arr.each { \|x\| puts x }` (inlined) |
 | `Integer#times` with block | `n.times do \|i\| ... end` |
+| Lambda/closures | `-> x { x + 1 }` with capture analysis |
+| **Control Flow** | |
 | `if` / `elsif` / `else` | conditional branching |
+| `case` / `when` / `else` | pattern matching with values, ranges |
+| `unless` | `unless x > 20` |
+| `while`, `until` | loops |
 | Ternary operator | `escape ? 0 : 1` |
-| `and` / `or` | `t > 0.0 and t < isect.t` |
+| `and` / `or` / `not` | boolean operators |
+| `break`, `next`, `return` | loop/method exit, continue |
+| **Types & Literals** | |
+| Integer, Float, Boolean, String, nil | unboxed C types |
+| Integer arrays | push/pop/shift/dup/reverse!/each/map/select |
+| Default parameter values | `def greet(name, greeting = "Hello")` |
+| **Arithmetic & Operators** | |
 | Arithmetic, comparison, bitwise | `+`, `-`, `*`, `/`, `%`, `<`, `>`, `==`, `<<`, `\|`, `^` |
 | Unary minus | `-b`, `-(expr)` |
 | `Math.sqrt`, `Math.cos`, `Math.sin` | C math functions |
+| **I/O** | |
+| `puts`, `print`, `printf`, `putc`, `p` | stdio calls |
 | String interpolation | `"P4\n#{size} #{size}"` → printf |
-| `puts`, `print`, `printf` | stdio calls |
 | `Integer#chr` | `print byte_acc.chr` → putchar |
-| `break`, `return` | loop/method exit |
-| Parallel assignment | `zr, zi = tr, ti` |
+| **Other** | |
+| Parallel/chained assignment | `zr, zi = tr, ti` / `a = b = 0` |
+| Local variables, constants | `size = 600`, `ITER = 49` |
 | Array indexing | `basis[0].x`, `@spheres[1].intersect(...)` |
+| Mark-and-sweep GC | automatic for heap-allocated objects |
+
+## Benchmarks
+
+| Benchmark | CRuby 3.2 | mruby | **Spinel AOT** | Speedup |
+|-----------|-----------|-------|----------------|---------|
+| mandelbrot (600x600 PBM) | 1.14s | 3.18s | **0.02s** | **57x** |
+| ao_render (64x64 AO raytracer) | 3.55s | 13.69s | **0.07s** | **51x** |
+| so_lists (300x10K arrays) | 0.44s | 2.01s | **0.02s** | **22x** |
+| fib(34) recursive | 0.55s | 2.78s | **0.01s** | **55x** |
+| lc_fizzbuzz (Church encoding) | 28.96s | — | **1.55s** | **19x** |
+| mandel_term (terminal art) | 0.05s | 0.05s | **~0s** | **50x+** |
 
 ## Project Structure
 
 ```
 spinel/
 ├── src/
-│   ├── main.c        # CLI, file reading, Prism parsing
-│   ├── codegen.h     # Type system, class/method/module info structs
-│   └── codegen.c     # Multi-pass code generator (~2000 lines)
+│   ├── main.c          # CLI, file reading, Prism parsing
+│   ├── codegen.h       # Type system, class/method/module info structs
+│   └── codegen.c       # Multi-pass code generator (~5000 lines)
+├── examples/
+│   ├── bm_so_mandelbrot.rb   # Mandelbrot set (while loops, bitwise)
+│   ├── bm_ao_render.rb       # AO raytracer (6 classes, modules)
+│   ├── bm_so_lists.rb        # Array operations (push/pop/shift)
+│   ├── bm_fib.rb             # Recursive fibonacci
+│   ├── bm_app_lc_fizzbuzz.rb # Lambda calculus FizzBuzz (1201 closures)
+│   ├── bm_mandel_term.rb     # Terminal Mandelbrot (cross-function calls)
+│   ├── bm_yield.rb           # yield/blocks (iterators, each/map/select)
+│   ├── bm_case.rb            # case/when, unless, next, default args
+│   └── bm_inherit.rb         # Inheritance, super
 ├── prototype/
-│   └── tools/        # Step 0 prototype (RBS extraction, LumiTrace, etc.)
-├── bm_so_mandelbrot.rb   # Benchmark: Mandelbrot set renderer
-├── bm_ao_render.rb       # Benchmark: Ambient occlusion raytracer
+│   └── tools/          # Step 0 prototype (RBS extraction, LumiTrace, etc.)
 ├── Makefile
-├── PLAN.md               # Implementation roadmap
+├── PLAN.md             # Implementation roadmap
 └── ruby_aot_compiler_design.md  # Detailed design document
 ```
 
