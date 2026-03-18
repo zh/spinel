@@ -10,7 +10,7 @@ Regexp対応プログラムのみ libonig をリンク。
 
 ## 現状 (Status)
 
-### コンパイラアーキテクチャ (~7600行のC)
+### コンパイラアーキテクチャ (~7700行のC)
 
 - Prism (libprism) によるRubyパース
 - 多パスコード生成:
@@ -35,6 +35,8 @@ Regexp対応プログラムのみ libonig をリンク。
 | | `attr_accessor` / `attr_reader` / `attr_writer` |
 | | クラスメソッド (`def self.foo`) |
 | | `Struct.new(:x, :y)` — 合成クラス生成 |
+| | `alias` — メソッド別名 |
+| | `freeze`/`frozen?` — AOTでは全値がfrozen扱い |
 | | getter/setter自動インライン化 |
 | | コンストラクタ (`.new`)、型付きオブジェクトへのメソッド呼び出し |
 | | モジュール (状態変数 + メソッド) |
@@ -53,7 +55,8 @@ Regexp対応プログラムのみ libonig をリンク。
 | | for..in + Range, loop do |
 | | break, next, return |
 | | ternary, and/or/not |
-| | `__LINE__`, `__FILE__` |
+| | `__LINE__`, `__FILE__`, `__method__`, `defined?` |
+| | `catch`/`throw` (タグ付き非局所脱出) |
 | **例外処理** | begin/rescue/ensure/retry |
 | | `raise "message"`, `raise ClassName, "message"` |
 | | `rescue ClassName => e` (クラス階層チェック付き) |
@@ -91,7 +94,7 @@ Regexp対応プログラムのみ libonig をリンク。
 | | シャドウスタックルート管理, ファイナライザ |
 | | GC不要なプログラムではGCコード省略 |
 
-### テストプログラム (27例)
+### テストプログラム (30例)
 
 | プログラム | テスト対象 |
 |-----------|-----------|
@@ -122,6 +125,9 @@ Regexp対応プログラムのみ libonig をリンク。
 | bm_exceptions | raise ClassName, rescue ClassName, 例外階層 |
 | bm_block2 | block_given?, ブロック付きyield呼び出し |
 | bm_fileio | File.read/write/exist?/delete |
+| bm_catch | catch/throw (タグ付き非局所脱出) |
+| bm_features | __method__, freeze/frozen? |
+| bm_comparable | alias メソッド別名 |
 
 ### ベンチマーク結果
 
@@ -149,13 +155,16 @@ Regexp使用時のみ libonig をリンク。
 | 4 | **組込クラス** | 一部完了 | Time, Range-as-object, Enumerator |
 | 5 | **完全なString** | 未着手 | sp_String構造体 (ミュータブル + encoding) |
 | 6 | **オブジェクトシステム完全性** | 未着手 | method_missing等はインタプリタフォールバック |
-| 7 | **制御フロー完全性** | 一部完了 | catch/throw, `__method__` |
+| 7 | **制御フロー完全性** | ほぼ完了 ✅ | 残: BEGIN/END のみ |
 | 8 | **パターンマッチ** | 未着手 | sp_RbValue (ポリモーフィズム) が前提 |
 | 9 | **例外階層** | 完了 ✅ | raise ClassName, rescue ClassName, 継承チェック |
 | 10 | **GC完全性** | 一部完了 | 文字列GC (sp_String), 世代別GC |
 
 ### 完了した項目
-- ✅ `__LINE__`, `__FILE__`, `defined?`
+- ✅ `__LINE__`, `__FILE__`, `defined?`, `__method__`
+- ✅ `catch`/`throw` (タグ付き非局所脱出、ネスト対応)
+- ✅ `freeze`/`frozen?` (AOTではno-op / 常にTRUE)
+- ✅ `alias` (メソッド別名)
 - ✅ `block_given?`, ブロック変数のwrite-capture修正
 - ✅ `raise ClassName, "msg"`, `rescue ClassName => e`, 例外クラス継承チェック
 - ✅ `File.read/write/exist?/delete`
@@ -224,6 +233,13 @@ typedef struct {
 3. **互換性**: 最終的に全valid Rubyをコンパイル可能に
 4. **NaN-boxing準備**: Phase 1をPhase 5で置き換え可能な設計
 
+### sp_RbValue待ちの機能
+- `Comparable` モジュール (演算子メソッド `<=>` のC名サニタイズが必要)
+- `Range` as object (sp_Range構造体 + メソッドセット)
+- パターンマッチ `case/in` (型チェック分岐)
+- 異種配列/Hash
+- ダックタイピング
+
 ---
 
 ## プロジェクト構成
@@ -233,8 +249,8 @@ spinel/
 ├── src/
 │   ├── main.c          # CLI、ファイル読み込み、Prismパース
 │   ├── codegen.h       # 型システム、クラス/メソッド/モジュール情報構造体
-│   └── codegen.c       # 多パスコード生成器 (~7600行)
-├── examples/           # 27テストプログラム
+│   └── codegen.c       # 多パスコード生成器 (~7700行)
+├── examples/           # 30テストプログラム
 ├── prototype/
 │   └── tools/          # Step 0プロトタイプ (RBS抽出、LumiTrace等)
 ├── Makefile
