@@ -996,7 +996,10 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
                     strcmp(method, "length") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
                 if (strcmp(method, "[]") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
                 if (strcmp(method, "!=") == 0 || strcmp(method, "==") == 0) { free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
-                if (strcmp(method, "map") == 0 || strcmp(method, "select") == 0) { free(method); return vt_prim(SPINEL_TYPE_ARRAY); }
+                if (strcmp(method, "map") == 0 || strcmp(method, "select") == 0 ||
+                    strcmp(method, "reject") == 0) { free(method); return vt_prim(SPINEL_TYPE_ARRAY); }
+                if (strcmp(method, "first") == 0 || strcmp(method, "last") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
+                if (strcmp(method, "include?") == 0) { free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
                 if (strcmp(method, "each") == 0) { free(method); return vt_prim(SPINEL_TYPE_ARRAY); }
             }
             /* Hash methods on HASH-typed receiver */
@@ -2921,6 +2924,21 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                     r = sfmt("sp_IntArray_length(%s)", recv);
                 else if (strcmp(method, "reverse!") == 0)
                     r = sfmt("sp_IntArray_reverse_bang(%s)", recv);
+                else if (strcmp(method, "first") == 0)
+                    r = sfmt("sp_IntArray_get(%s, 0)", recv);
+                else if (strcmp(method, "last") == 0)
+                    r = sfmt("sp_IntArray_get(%s, sp_IntArray_length(%s) - 1)", recv, recv);
+                else if (strcmp(method, "include?") == 0 && call->arguments &&
+                         call->arguments->arguments.size == 1) {
+                    char *arg = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "mrb_bool _incl_%d = FALSE; { mrb_int _ii_%d;\n", tmp, tmp);
+                    emit(ctx, "  for (_ii_%d = 0; _ii_%d < sp_IntArray_length(%s); _ii_%d++)\n", tmp, tmp, recv, tmp);
+                    emit(ctx, "    if (sp_IntArray_get(%s, _ii_%d) == %s) { _incl_%d = TRUE; break; }\n", recv, tmp, arg, tmp);
+                    emit(ctx, "}\n");
+                    free(arg);
+                    r = sfmt("_incl_%d", tmp);
+                }
                 else if (strcmp(method, "push") == 0 && call->arguments &&
                          call->arguments->arguments.size == 1) {
                     char *arg = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
@@ -3045,6 +3063,57 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                     emit(ctx, "}\n");
                     free(recv); free(bpname); free(method);
                     return sfmt("_sel_%d", tmp);
+                }
+
+                /* Array#reject with block → new IntArray (opposite of select) */
+                if (strcmp(method, "reject") == 0 && call->block &&
+                    PM_NODE_TYPE(call->block) == PM_BLOCK_NODE) {
+                    pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                    char *bpname = NULL;
+                    if (blk->parameters && PM_NODE_TYPE(blk->parameters) == PM_BLOCK_PARAMETERS_NODE) {
+                        pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+                        if (bp->parameters && bp->parameters->requireds.size > 0) {
+                            pm_node_t *p = bp->parameters->requireds.nodes[0];
+                            if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                                bpname = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                        }
+                    }
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "sp_IntArray *_rej_%d = sp_IntArray_new();\n", tmp);
+                    emit(ctx, "for (mrb_int _ri_%d = 0; _ri_%d < sp_IntArray_length(%s); _ri_%d++) {\n",
+                         tmp, tmp, recv, tmp);
+                    ctx->indent++;
+                    if (bpname) {
+                        char *cn = make_cname(bpname, false);
+                        emit(ctx, "mrb_int %s = sp_IntArray_get(%s, _ri_%d);\n", cn, recv, tmp);
+                        free(cn);
+                    }
+                    char *body_expr = NULL;
+                    if (blk->body) {
+                        pm_node_t *body = (pm_node_t *)blk->body;
+                        if (PM_NODE_TYPE(body) == PM_STATEMENTS_NODE) {
+                            pm_statements_node_t *stmts = (pm_statements_node_t *)body;
+                            if (stmts->body.size > 0)
+                                body_expr = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                        } else {
+                            body_expr = codegen_expr(ctx, body);
+                        }
+                    }
+                    if (body_expr) {
+                        if (bpname) {
+                            char *cn = make_cname(bpname, false);
+                            emit(ctx, "if (!(%s)) sp_IntArray_push(_rej_%d, %s);\n", body_expr, tmp, cn);
+                            free(cn);
+                        } else {
+                            emit(ctx, "if (!(%s)) sp_IntArray_push(_rej_%d, sp_IntArray_get(%s, _ri_%d));\n",
+                                 body_expr, tmp, recv, tmp);
+                        }
+                        free(body_expr);
+                    }
+                    ctx->indent--;
+                    emit(ctx, "}\n");
+                    free(recv); free(bpname); free(method);
+                    return sfmt("_rej_%d", tmp);
                 }
 
                 free(recv);
