@@ -10,7 +10,7 @@ Regexp対応プログラムのみ libonig をリンク。
 
 ## 現状 (Status)
 
-### コンパイラアーキテクチャ (~7300行のC)
+### コンパイラアーキテクチャ (~7400行のC)
 
 - Prism (libprism) によるRubyパース
 - 多パスコード生成:
@@ -88,7 +88,7 @@ Regexp対応プログラムのみ libonig をリンク。
 | | シャドウスタックルート管理, ファイナライザ |
 | | GC不要なプログラムではGCコード省略 |
 
-### テストプログラム (22例)
+### テストプログラム (23例)
 
 | プログラム | テスト対象 |
 |-----------|-----------|
@@ -114,6 +114,7 @@ Regexp対応プログラムのみ libonig をリンク。
 | bm_introspect | is_a?, respond_to?, nil?, positive?, negative? |
 | bm_struct | Struct.new |
 | bm_array2 | Array#reject/first/last/include? |
+| bm_sort_reduce | Array#sort/min/max/sum/reduce/inject |
 
 ### ベンチマーク結果
 
@@ -244,8 +245,8 @@ spinel/
 ├── src/
 │   ├── main.c          # CLI、ファイル読み込み、Prismパース
 │   ├── codegen.h       # 型システム、クラス/メソッド/モジュール情報構造体
-│   └── codegen.c       # 多パスコード生成器 (~7300行)
-├── examples/           # 22テストプログラム
+│   └── codegen.c       # 多パスコード生成器 (~7400行)
+├── examples/           # 23テストプログラム
 │   ├── bm_so_mandelbrot.rb   # Mandelbrot集合
 │   ├── bm_ao_render.rb       # AOレイトレーサー (6クラス、モジュール)
 │   ├── bm_so_lists.rb        # 配列操作
@@ -275,15 +276,39 @@ spinel/
 └── ruby_aot_compiler_design.md  # 詳細設計文書
 ```
 
-## 次のステップ
+## 完了した次ステップ (7項目の評価)
 
-1. **多値Hash** — 任意型のvalue対応
-2. **Array#sort / sort_by** — ソート (qsort)
-3. **Array#reduce / inject** — 畳み込み
-4. **Proc.new / proc {}** — lambda以外のProc
-5. **`extend`** — クラスレベルmixin
-6. **LumiTraceプロファイル統合** — 型推論の精度向上
-7. **複数ファイルコンパイル** — require/load対応
+| # | 項目 | 結果 |
+|---|------|------|
+| 1 | **多値Hash** | **保留** — ボックス化が必要で大規模な変更。String→Integerで多くのケースに対応。 |
+| 2 | **Array#sort / sort_by** | **完了** ✅ — qsortベースのsort/sort!、min/max/sum追加 |
+| 3 | **Array#reduce / inject** | **完了** ✅ — インライン畳み込み、ブロックパラメータの型推論対応 |
+| 4 | **Proc.new / proc {}** | **保留** — lambda構文(`-> x { }`)で大半のケースに対応。proc意味論の差異(returnの挙動)は要検討。 |
+| 5 | **`extend`** | **保留** — `include`より使用頻度低。必要時に追加。 |
+| 6 | **LumiTraceプロファイル統合** | **保留** — 静的型推論が23例で十分機能。動的プロファイルは型が静的に決定できないプログラムで有用。 |
+| 7 | **複数ファイルコンパイル** | **保留** — require/loadのファイル解決、定義のマージが必要な大規模変更。単一ファイルで全例に対応。 |
+
+## 今後の方向性
+
+### 短期 (現実装の改善)
+- 多値Hash (String→any) — タグ付きユニオンvalue
+- `Array#sort_by { |x| expr }` — カスタムソート
+- `Proc.new` / `proc {}` — lambda以外のProc
+- 多段継承チェーンのテスト
+- `freeze` / `frozen?`
+
+### 中期 (新機能)
+- `extend` — クラスレベルmixin
+- `Comparable` / `Enumerable` モジュール
+- `String#[]` / `String#[]=` — 文字列インデックス
+- Exception クラス定義
+- `require` — ファイル間コンパイル
+
+### 長期 (研究的)
+- LumiTrace統合 — 動的型プロファイル
+- Prism型注釈 (RBS/Steep連携)
+- JIT的最適化 (型ガード付きspeculative codegen)
+- WebAssembly出力
 
 ## 参考情報
 
