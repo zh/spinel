@@ -1109,6 +1109,11 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
                 free(mod_name); free(method);
                 return vt_prim(SPINEL_TYPE_FLOAT);
             }
+            if (strcmp(mod_name, "File") == 0) {
+                if (strcmp(method, "read") == 0) { free(mod_name); free(method); return vt_prim(SPINEL_TYPE_STRING); }
+                if (strcmp(method, "exist?") == 0 || strcmp(method, "exists?") == 0) { free(mod_name); free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
+                if (strcmp(method, "write") == 0 || strcmp(method, "delete") == 0) { free(mod_name); free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
+            }
             /* Class method calls: ClassName.method → look up class method return type */
             {
                 class_info_t *cls = find_class(ctx, mod_name);
@@ -2896,6 +2901,38 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                         return r;
                     }
                 }
+                /* File class methods */
+                if (ceq(ctx, cr->name, "File")) {
+                    if (strcmp(method, "read") == 0 && call->arguments &&
+                        call->arguments->arguments.size == 1) {
+                        char *path = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *r = sfmt("sp_File_read(%s)", path);
+                        free(path); free(method);
+                        return r;
+                    }
+                    if (strcmp(method, "write") == 0 && call->arguments &&
+                        call->arguments->arguments.size == 2) {
+                        char *path = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *data = codegen_expr(ctx, call->arguments->arguments.nodes[1]);
+                        char *r = sfmt("sp_File_write(%s, %s)", path, data);
+                        free(path); free(data); free(method);
+                        return r;
+                    }
+                    if ((strcmp(method, "exist?") == 0 || strcmp(method, "exists?") == 0) &&
+                        call->arguments && call->arguments->arguments.size == 1) {
+                        char *path = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *r = sfmt("sp_File_exist(%s)", path);
+                        free(path); free(method);
+                        return r;
+                    }
+                    if (strcmp(method, "delete") == 0 && call->arguments &&
+                        call->arguments->arguments.size == 1) {
+                        char *path = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *r = sfmt("sp_File_delete(%s)", path);
+                        free(path); free(method);
+                        return r;
+                    }
+                }
                 /* Rand::rand */
                 if (ceq(ctx, cr->name, "Rand")) {
                     char *r = sfmt("sp_Rand_%s()", method);
@@ -4521,7 +4558,7 @@ static void codegen_stmt(codegen_ctx_t *ctx, pm_node_t *node) {
                     free(fmt); free(args);
                 } else if (at.kind == SPINEL_TYPE_STRING) {
                     char *ae = codegen_expr(ctx, arg);
-                    emit(ctx, "puts(%s);\n", ae);
+                    emit(ctx, "{ const char *_ps = %s; fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n", ae);
                     free(ae);
                 } else if (at.kind == SPINEL_TYPE_BOOLEAN) {
                     char *ae = codegen_expr(ctx, arg);
@@ -4602,7 +4639,7 @@ static void codegen_stmt(codegen_ctx_t *ctx, pm_node_t *node) {
                 vtype_t at = infer_type(ctx, arg);
                 char *ae = codegen_expr(ctx, arg);
                 if (at.kind == SPINEL_TYPE_STRING)
-                    emit(ctx, "puts(%s);\n", ae);
+                    emit(ctx, "{ const char *_ps = %s; fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n", ae);
                 else
                     emit(ctx, "printf(\"%%lld\\n\", (long long)%s);\n", ae);
                 free(ae);
@@ -5814,6 +5851,21 @@ static void emit_header(codegen_ctx_t *ctx) {
     emit_raw(ctx, "    memcpy(r, a, la); memcpy(r + la, b, lb + 1); return r;\n}\n");
     emit_raw(ctx, "static const char *sp_int_to_s(mrb_int n) {\n");
     emit_raw(ctx, "    char *r = (char *)malloc(24); snprintf(r, 24, \"%%lld\", (long long)n); return r;\n}\n\n");
+
+    /* ---- File I/O helpers ---- */
+    emit_raw(ctx, "static const char *sp_File_read(const char *path) {\n");
+    emit_raw(ctx, "    FILE *f = fopen(path, \"rb\"); if (!f) return \"\";\n");
+    emit_raw(ctx, "    fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET);\n");
+    emit_raw(ctx, "    char *buf = (char *)malloc(len + 1); fread(buf, 1, len, f); buf[len] = 0;\n");
+    emit_raw(ctx, "    fclose(f); return buf;\n}\n");
+    emit_raw(ctx, "static mrb_int sp_File_write(const char *path, const char *data) {\n");
+    emit_raw(ctx, "    FILE *f = fopen(path, \"wb\"); if (!f) return 0;\n");
+    emit_raw(ctx, "    size_t n = strlen(data); fwrite(data, 1, n, f); fclose(f);\n");
+    emit_raw(ctx, "    return (mrb_int)n;\n}\n");
+    emit_raw(ctx, "static mrb_bool sp_File_exist(const char *path) {\n");
+    emit_raw(ctx, "    FILE *f = fopen(path, \"r\"); if (f) { fclose(f); return TRUE; } return FALSE;\n}\n");
+    emit_raw(ctx, "static mrb_int sp_File_delete(const char *path) {\n");
+    emit_raw(ctx, "    return remove(path) == 0 ? 1 : 0;\n}\n\n");
 
     /* ---- Additional string helpers ---- */
     emit_raw(ctx, "static const char *sp_str_strip(const char *s) {\n");
