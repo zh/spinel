@@ -229,6 +229,17 @@ typedef struct {
         int id;             /* unique ID (_re_N) */
     } regexps[MAX_REGEXPS];
 
+    /* Megamorphic dispatch: collect per-method dispatch functions for 3+ types */
+    #define MAX_MEGA_DISPATCH 32
+    struct {
+        char method_name[64];                        /* Ruby method name */
+        char sanitized[64];                          /* C-safe method name */
+        char class_names[MAX_POLY_CLASSES][64];      /* classes in the dispatch set */
+        int class_count;
+        spinel_type_t return_kind;                   /* return type kind */
+    } mega_dispatch[MAX_MEGA_DISPATCH];
+    int mega_dispatch_count;
+
     /* Lambda scope stack for capture analysis */
     #define MAX_LAMBDA_DEPTH 64
     #define MAX_SCOPE_VARS 32

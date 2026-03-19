@@ -281,6 +281,39 @@ static int poly_class_get(codegen_ctx_t *ctx, const char *func_name,
     return 0;
 }
 
+/* Register a megamorphic dispatch function for a method called on 3+ types.
+ * Returns the index into ctx->mega_dispatch[], or an existing entry if already registered.
+ * The dispatch function will be named sp_dispatch_<sanitized_method>. */
+static int mega_dispatch_register(codegen_ctx_t *ctx, const char *method,
+                                   const char *sanitized,
+                                   char classes[][64], int nclasses,
+                                   spinel_type_t return_kind) {
+    /* Check if an identical dispatch already exists */
+    for (int i = 0; i < ctx->mega_dispatch_count; i++) {
+        if (strcmp(ctx->mega_dispatch[i].method_name, method) == 0 &&
+            ctx->mega_dispatch[i].class_count == nclasses) {
+            bool same = true;
+            for (int j = 0; j < nclasses && same; j++) {
+                bool found = false;
+                for (int k = 0; k < ctx->mega_dispatch[i].class_count; k++)
+                    if (strcmp(ctx->mega_dispatch[i].class_names[k], classes[j]) == 0) { found = true; break; }
+                if (!found) same = false;
+            }
+            if (same) return i;
+        }
+    }
+    /* Register new dispatch */
+    if (ctx->mega_dispatch_count >= MAX_MEGA_DISPATCH) return -1;
+    int idx = ctx->mega_dispatch_count++;
+    snprintf(ctx->mega_dispatch[idx].method_name, 64, "%s", method);
+    snprintf(ctx->mega_dispatch[idx].sanitized, 64, "%s", sanitized);
+    for (int j = 0; j < nclasses && j < MAX_POLY_CLASSES; j++)
+        snprintf(ctx->mega_dispatch[idx].class_names[j], 64, "%s", classes[j]);
+    ctx->mega_dispatch[idx].class_count = nclasses;
+    ctx->mega_dispatch[idx].return_kind = return_kind;
+    return idx;
+}
+
 /* ------------------------------------------------------------------ */
 /* Variable table                                                     */
 /* ------------------------------------------------------------------ */
@@ -4594,7 +4627,7 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                 }
             }
 
-            /* Bimorphic dispatch: method call on POLY receiver with known class set */
+            /* Polymorphic dispatch: method call on POLY receiver with known class set */
             if (recv_t.kind == SPINEL_TYPE_POLY && call->receiver &&
                 PM_NODE_TYPE(call->receiver) == PM_LOCAL_VARIABLE_READ_NODE) {
                 pm_local_variable_read_node_t *lv = (pm_local_variable_read_node_t *)call->receiver;
@@ -4622,8 +4655,20 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                             method_info_t *m0 = cls0 ? find_method_inherited(ctx, cls0, method, NULL) : NULL;
                             bool returns_string = m0 && m0->return_type.kind == SPINEL_TYPE_STRING;
 
-                            /* Generate bimorphic inline if/else as expression via ternary */
-                            /* For simplicity, use a temp var */
+                            /* Megamorphic (3+ types): use dispatch function */
+                            if (nclasses >= 3) {
+                                spinel_type_t ret_kind = m0 ? m0->return_type.kind : SPINEL_TYPE_NIL;
+                                mega_dispatch_register(ctx, method, c_mname, classes, nclasses, ret_kind);
+                                char *r;
+                                if (returns_string)
+                                    r = sfmt("sp_dispatch_%s(%s%s)", c_mname, recv, args);
+                                else
+                                    r = sfmt("sp_dispatch_%s(%s%s)", c_mname, recv, args);
+                                free(recv); free(args); free(vname); free(method);
+                                return r;
+                            }
+
+                            /* Bimorphic (exactly 2 types): inline if/else */
                             int tmp = ctx->temp_counter++;
                             if (returns_string) {
                                 emit(ctx, "const char *_poly_%d;\n", tmp);
@@ -9414,6 +9459,51 @@ static void emit_lambda_fizzbuzz_funcs(codegen_ctx_t *ctx) {
     emit_raw(ctx, "}\n\n");
 }
 
+/* Emit megamorphic dispatch functions at file scope.
+ * Each dispatch function uses a switch on obj.tag to call the correct
+ * class-specific method. Called after class methods are emitted. */
+static void emit_mega_dispatch_funcs(codegen_ctx_t *ctx) {
+    for (int i = 0; i < ctx->mega_dispatch_count; i++) {
+        const char *mname = ctx->mega_dispatch[i].sanitized;
+        int nc = ctx->mega_dispatch[i].class_count;
+        spinel_type_t ret_kind = ctx->mega_dispatch[i].return_kind;
+        bool returns_string = (ret_kind == SPINEL_TYPE_STRING);
+
+        if (returns_string) {
+            emit_raw(ctx, "static const char *sp_dispatch_%s(sp_RbValue obj) {\n", mname);
+            emit_raw(ctx, "    switch (obj.tag) {\n");
+            for (int ci = 0; ci < nc; ci++) {
+                const char *cn = ctx->mega_dispatch[i].class_names[ci];
+                emit_raw(ctx, "    case SP_TAG_%s: return sp_%s_%s((sp_%s *)obj.p);\n",
+                         cn, cn, mname, cn);
+            }
+            emit_raw(ctx, "    default: return \"\";\n");
+            emit_raw(ctx, "    }\n");
+            emit_raw(ctx, "}\n\n");
+        } else {
+            emit_raw(ctx, "static sp_RbValue sp_dispatch_%s(sp_RbValue obj) {\n", mname);
+            emit_raw(ctx, "    switch (obj.tag) {\n");
+            for (int ci = 0; ci < nc; ci++) {
+                const char *cn = ctx->mega_dispatch[i].class_names[ci];
+                class_info_t *cls = find_class(ctx, cn);
+                method_info_t *mi = cls ? find_method_inherited(ctx, cls, ctx->mega_dispatch[i].method_name, NULL) : NULL;
+                char *call_expr = sfmt("sp_%s_%s((sp_%s *)obj.p)", cn, mname, cn);
+                if (mi) {
+                    char *boxed = poly_box_expr_vt(ctx, mi->return_type, call_expr);
+                    emit_raw(ctx, "    case SP_TAG_%s: return %s;\n", cn, boxed);
+                    free(boxed);
+                } else {
+                    emit_raw(ctx, "    case SP_TAG_%s: return sp_box_nil();\n", cn);
+                }
+                free(call_expr);
+            }
+            emit_raw(ctx, "    default: return sp_box_nil();\n");
+            emit_raw(ctx, "    }\n");
+            emit_raw(ctx, "}\n\n");
+        }
+    }
+}
+
 void codegen_program(codegen_ctx_t *ctx, pm_node_t *root) {
     assert(PM_NODE_TYPE(root) == PM_PROGRAM_NODE);
     pm_program_node_t *prog = (pm_program_node_t *)root;
@@ -10032,11 +10122,17 @@ void codegen_program(codegen_ctx_t *ctx, pm_node_t *root) {
         ctx->out = real_out;
         ctx->block_out = NULL;
 
-        /* Emit block callbacks first, then the functions and main */
+        /* Emit block callbacks first */
         if (block_buf_data && block_buf_size > 0) {
             fwrite(block_buf_data, 1, block_buf_size, ctx->out);
             emit_raw(ctx, "\n");
         }
+
+        /* Emit megamorphic dispatch functions (before top-level funcs/main) */
+        if (ctx->mega_dispatch_count > 0)
+            emit_mega_dispatch_funcs(ctx);
+
+        /* Then the functions and main */
         if (code_buf_data)
             fwrite(code_buf_data, 1, code_buf_size, ctx->out);
         free(block_buf_data);
