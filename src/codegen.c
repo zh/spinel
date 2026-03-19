@@ -5405,9 +5405,27 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
             return sfmt("_sl_%d", tmp);
         }
 
-        /* Fallback */
-        free(method);
-        return sfmt("/* TODO: call */ 0");
+        /* Fallback — unsupported method call */
+        {
+            /* Get receiver type description for warning */
+            const char *recv_desc = "unknown";
+            if (call->receiver) {
+                vtype_t rt = infer_type(ctx, call->receiver);
+                if (rt.kind == SPINEL_TYPE_INTEGER) recv_desc = "Integer";
+                else if (rt.kind == SPINEL_TYPE_FLOAT) recv_desc = "Float";
+                else if (rt.kind == SPINEL_TYPE_STRING) recv_desc = "String";
+                else if (rt.kind == SPINEL_TYPE_ARRAY) recv_desc = "Array";
+                else if (rt.kind == SPINEL_TYPE_HASH) recv_desc = "Hash";
+                else if (rt.kind == SPINEL_TYPE_OBJECT) recv_desc = rt.klass;
+                else if (rt.kind == SPINEL_TYPE_POLY) recv_desc = "POLY";
+            } else {
+                recv_desc = "Kernel";
+            }
+            fprintf(stderr, "spinel: warning: unsupported call %s#%s\n", recv_desc, method);
+            char *r = sfmt("0 /* unsupported: %s#%s */", recv_desc, method);
+            free(method);
+            return r;
+        }
     }
 
     case PM_IF_NODE: {
@@ -5803,7 +5821,8 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
     }
 
     default:
-        return sfmt("0 /* TODO: expr %d */", PM_NODE_TYPE(node));
+        fprintf(stderr, "spinel: warning: unsupported expression node type %d\n", PM_NODE_TYPE(node));
+        return sfmt("0 /* unsupported expr %d */", PM_NODE_TYPE(node));
     }
 }
 
