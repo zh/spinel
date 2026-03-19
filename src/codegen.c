@@ -5172,6 +5172,19 @@ static void codegen_stmt(codegen_ctx_t *ctx, pm_node_t *node) {
             break;
         }
 
+        /* Kernel#sleep */
+        if (!call->receiver && strcmp(method, "sleep") == 0) {
+            if (call->arguments && call->arguments->arguments.size > 0) {
+                char *secs = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                emit(ctx, "sleep((unsigned int)%s);\n", secs);
+                free(secs);
+            } else {
+                emit(ctx, "pause();\n"); /* sleep forever */
+            }
+            free(method);
+            break;
+        }
+
         /* puts: output + newline */
         if (!call->receiver && strcmp(method, "puts") == 0) {
             /* In lambda mode: puts on a StrArray variable → iterate and print each */
@@ -6589,7 +6602,8 @@ static void emit_header(codegen_ctx_t *ctx) {
     emit_raw(ctx, "#include <math.h>\n");
     emit_raw(ctx, "#include <stdbool.h>\n");
     emit_raw(ctx, "#include <stdint.h>\n");
-    emit_raw(ctx, "#include <ctype.h>\n\n");
+    emit_raw(ctx, "#include <ctype.h>\n");
+    emit_raw(ctx, "#include <unistd.h>\n\n");
     emit_raw(ctx, "typedef int64_t mrb_int;\n");
     emit_raw(ctx, "typedef double mrb_float;\n");
     emit_raw(ctx, "typedef bool mrb_bool;\n");
