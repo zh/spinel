@@ -1878,6 +1878,11 @@ void resolve_class_types(codegen_ctx_t *ctx, pm_node_t *prog_root) {
                         for (size_t ai = 0; ai < cc->arguments->arguments.size && sp < 255; ai++)
                             stack[sp++] = cc->arguments->arguments.nodes[ai];
                     }
+                    /* Push block body for nested function calls */
+                    if (cc->block && PM_NODE_TYPE(cc->block) == PM_BLOCK_NODE) {
+                        pm_block_node_t *blk = (pm_block_node_t *)cc->block;
+                        if (blk->body && sp < 255) stack[sp++] = (pm_node_t *)blk->body;
+                    }
                 }
                 /* Recurse into common statement types */
                 if (PM_NODE_TYPE(cur) == PM_IF_NODE) {

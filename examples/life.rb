@@ -17,50 +17,28 @@ def cell_get(cells, x, y)
 end
 
 def neighbors(cells, x, y)
-  count = 0
-  iy = -1
-  while iy <= 1
-    ix = -1
-    while ix <= 1
-      if cell_get(cells, x + ix, y + iy) == 1
-        count = count + 1
-      end
-      ix = ix + 1
-    end
-    iy = iy + 1
-  end
-  count
+  (-1..1).sum { |iy|
+    (-1..1).count { |ix| cell_get(cells, x + ix, y + iy) == 1 }
+  }
 end
 
 def next_gen(cells)
-  new_cells = Array.new
-  y = 0
-  while y < H
-    x = 0
-    while x < W
-      n = neighbors(cells, x, y)
-      alive = cells[y * W + x]
-      if n == 3
-        new_cells.push(1)
-      elsif n == 4 && alive == 1
-        new_cells.push(1)
-      else
-        new_cells.push(0)
-      end
-      x = x + 1
+  SIZE.times.map { |i|
+    y = i / W
+    x = i % W
+    n = neighbors(cells, x, y)
+    if n == 3
+      1
+    elsif n == 4 && cells[i] == 1
+      1
+    else
+      0
     end
-    y = y + 1
-  end
-  new_cells
+  }
 end
 
 # Initialize with a deterministic pattern (glider + blinker)
-cells = Array.new
-i = 0
-while i < SIZE
-  cells.push(0)
-  i = i + 1
-end
+cells = SIZE.times.map { 0 }
 
 # Glider at (1,1)
 cells[1 * W + 2] = 1
@@ -76,20 +54,11 @@ cells[10 * W + 12] = 1
 
 # Run
 gen = 0
-live = 0
 while gen < GENERATIONS
   cells = next_gen(cells)
   gen = gen + 1
 end
 
 # Count final live cells
-i = 0
-while i < SIZE
-  if cells[i] == 1
-    live = live + 1
-  end
-  i = i + 1
-end
-
-puts live
+puts cells.count { _1 == 1 }
 puts "done"
