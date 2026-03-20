@@ -1629,7 +1629,10 @@ void resolve_class_types(codegen_ctx_t *ctx, pm_node_t *prog_root) {
             }
         }
 
-        /* Infer top-level function param types from call sites (using stack-based walk) */
+        /* Infer top-level function param/return types from call sites.
+         * Run 2 iterations: first resolves params, second resolves return types
+         * that depend on those params. */
+        for (int func_pass = 0; func_pass < 4; func_pass++) {
         if (prog_root && PM_NODE_TYPE(prog_root) == PM_PROGRAM_NODE) {
             pm_program_node_t *prog = (pm_program_node_t *)prog_root;
             if (prog->statements) {
@@ -1812,14 +1815,14 @@ void resolve_class_types(codegen_ctx_t *ctx, pm_node_t *prog_root) {
                         char *cn2 = cstr(ctx, cc->name);
                         func_info_t *target = find_func(ctx, cn2);
                         if (target) {
+                            /* Register caller params AND body locals for type inference */
+                            int sv = ctx->var_count;
+                            for (int cp = 0; cp < caller->param_count; cp++)
+                                var_declare(ctx, caller->params[cp].name, caller->params[cp].type, false);
+                            infer_pass(ctx, caller->body_node);
                             for (int pi = 0; pi < target->param_count &&
                                  pi < (int)cc->arguments->arguments.size; pi++) {
-                                /* Register caller params in var table temporarily */
-                                int sv = ctx->var_count;
-                                for (int cp = 0; cp < caller->param_count; cp++)
-                                    var_declare(ctx, caller->params[cp].name, caller->params[cp].type, false);
                                 vtype_t at = infer_type(ctx, cc->arguments->arguments.nodes[pi]);
-                                ctx->var_count = sv;
                                 if (target->params[pi].type.kind == SPINEL_TYPE_VALUE) {
                                     if (at.kind != SPINEL_TYPE_VALUE)
                                         target->params[pi].type = at;
@@ -1839,6 +1842,7 @@ void resolve_class_types(codegen_ctx_t *ctx, pm_node_t *prog_root) {
                                         target->params[pi].type = vt_prim(SPINEL_TYPE_POLY);
                                 }
                             }
+                            ctx->var_count = sv;
                         }
                         free(cn2);
                     }
@@ -1889,10 +1893,7 @@ void resolve_class_types(codegen_ctx_t *ctx, pm_node_t *prog_root) {
         for (int fi = 0; fi < ctx->func_count; fi++) {
             func_info_t *f = &ctx->funcs[fi];
             if (f->return_type.kind != SPINEL_TYPE_VALUE) continue;
-            bool all_typed = true;
-            for (int pi = 0; pi < f->param_count; pi++)
-                if (f->params[pi].type.kind == SPINEL_TYPE_VALUE) all_typed = false;
-            if (all_typed && f->body_node) {
+            if (f->body_node) {
                 int sv = ctx->var_count;
                 for (int pi = 0; pi < f->param_count; pi++)
                     var_declare(ctx, f->params[pi].name, f->params[pi].type, false);
@@ -1967,6 +1968,8 @@ void resolve_class_types(codegen_ctx_t *ctx, pm_node_t *prog_root) {
                 }
             }
         }
+
+        } /* end func_pass loop */
 
         /* Fix Scene: spheres is an array of Sphere pointers, not a single value */
         class_info_t *scene = find_class(ctx, "Scene");

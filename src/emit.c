@@ -1730,6 +1730,10 @@ void emit_header(codegen_ctx_t *ctx) {
     emit_raw(ctx, "    if (idx < 0) idx += a->len;\n");
     emit_raw(ctx, "    return a->data[a->start + idx];\n}\n\n");
 
+    emit_raw(ctx, "static void sp_IntArray_set(sp_IntArray *a, mrb_int idx, mrb_int val) {\n");
+    emit_raw(ctx, "    if (idx < 0) idx += a->len;\n");
+    emit_raw(ctx, "    if (idx >= 0 && idx < a->len) a->data[a->start + idx] = val;\n}\n\n");
+
     emit_raw(ctx, "static mrb_bool sp_IntArray_neq(sp_IntArray *a, sp_IntArray *b) {\n");
     emit_raw(ctx, "    if (a->len != b->len) return TRUE;\n");
     emit_raw(ctx, "    return memcmp(a->data + a->start, b->data + b->start, sizeof(mrb_int) * a->len) != 0;\n}\n\n");

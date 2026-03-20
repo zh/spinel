@@ -264,6 +264,8 @@ var_entry_t *var_declare(codegen_ctx_t *ctx, const char *name,
                 ; /* already POLY, leave it */
             else if (vt_is_poly_eligible(v->type) && vt_is_poly_eligible(type))
                 v->type = vt_prim(SPINEL_TYPE_POLY);
+            else if (type.kind == SPINEL_TYPE_VALUE || type.kind == SPINEL_TYPE_UNKNOWN)
+                ; /* keep more specific existing type (will be resolved in later passes) */
             else
                 v->type = vt_prim(SPINEL_TYPE_VALUE);
         } else if (v->type.kind == SPINEL_TYPE_UNKNOWN) {

@@ -829,6 +829,15 @@ char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
         if (strcmp(method, "[]=") == 0 && call->receiver && call->arguments &&
             call->arguments->arguments.size == 2) {
             vtype_t recv_t = infer_type(ctx, call->receiver);
+            if (recv_t.kind == SPINEL_TYPE_ARRAY) {
+                /* IntArray: cells[idx] = val → sp_IntArray_set */
+                char *recv = codegen_expr(ctx, call->receiver);
+                char *idx = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                char *val = codegen_expr(ctx, call->arguments->arguments.nodes[1]);
+                char *r = sfmt("sp_IntArray_set(%s, %s, %s)", recv, idx, val);
+                free(recv); free(idx); free(val); free(method);
+                return r;
+            }
             if (recv_t.kind != SPINEL_TYPE_HASH && recv_t.kind != SPINEL_TYPE_RB_HASH) {
                 char *recv = codegen_expr(ctx, call->receiver);
                 char *idx = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
