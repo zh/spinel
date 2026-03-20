@@ -440,6 +440,72 @@ static void analyze_class(codegen_ctx_t *ctx, pm_class_node_t *node) {
         snprintf(cls->superclass, sizeof(cls->superclass), "%s", sname);
         free(sname);
     }
+    /* Detect class X < Struct.new(:field1, :field2, keyword_init: true) */
+    else if (node->superclass && PM_NODE_TYPE(node->superclass) == PM_CALL_NODE) {
+        pm_call_node_t *sc = (pm_call_node_t *)node->superclass;
+        if (ceq(ctx, sc->name, "new") && sc->receiver &&
+            PM_NODE_TYPE(sc->receiver) == PM_CONSTANT_READ_NODE) {
+            pm_constant_read_node_t *cr = (pm_constant_read_node_t *)sc->receiver;
+            if (ceq(ctx, cr->name, "Struct") && sc->arguments) {
+                /* Check for keyword_init: true */
+                bool keyword_init = false;
+                int nfields = (int)sc->arguments->arguments.size;
+                for (int fi = 0; fi < nfields; fi++) {
+                    pm_node_t *arg = sc->arguments->arguments.nodes[fi];
+                    if (PM_NODE_TYPE(arg) == PM_KEYWORD_HASH_NODE) {
+                        keyword_init = true;
+                        nfields = fi;
+                        break;
+                    }
+                }
+
+                /* Create initialize method with struct fields as params */
+                method_info_t *init = &cls->methods[cls->method_count++];
+                memset(init, 0, sizeof(*init));
+                snprintf(init->name, sizeof(init->name), "initialize");
+                init->return_type = vt_obj(cls->name);
+
+                for (int fi = 0; fi < nfields && fi < MAX_IVARS; fi++) {
+                    pm_node_t *arg = sc->arguments->arguments.nodes[fi];
+                    if (PM_NODE_TYPE(arg) != PM_SYMBOL_NODE) continue;
+                    pm_symbol_node_t *sym = (pm_symbol_node_t *)arg;
+                    const uint8_t *fsrc = pm_string_source(&sym->unescaped);
+                    size_t flen = pm_string_length(&sym->unescaped);
+                    char fname[64];
+                    snprintf(fname, sizeof(fname), "%.*s", (int)flen, fsrc);
+
+                    /* Ivar */
+                    ivar_info_t *iv = &cls->ivars[cls->ivar_count++];
+                    snprintf(iv->name, sizeof(iv->name), "%s", fname);
+                    iv->type = keyword_init ? vt_prim(SPINEL_TYPE_VALUE) : vt_prim(SPINEL_TYPE_INTEGER);
+
+                    /* Init param */
+                    snprintf(init->params[init->param_count].name, 64, "%s", fname);
+                    init->params[init->param_count].type = keyword_init ? vt_prim(SPINEL_TYPE_VALUE) : vt_prim(SPINEL_TYPE_INTEGER);
+                    init->params[init->param_count].is_keyword = keyword_init;
+                    init->param_count++;
+
+                    /* Getter */
+                    method_info_t *getter = &cls->methods[cls->method_count++];
+                    memset(getter, 0, sizeof(*getter));
+                    snprintf(getter->name, sizeof(getter->name), "%s", fname);
+                    getter->is_getter = true;
+                    snprintf(getter->accessor_ivar, sizeof(getter->accessor_ivar), "%s", fname);
+                    getter->return_type = vt_prim(SPINEL_TYPE_INTEGER);
+
+                    /* Setter */
+                    method_info_t *setter = &cls->methods[cls->method_count++];
+                    memset(setter, 0, sizeof(*setter));
+                    snprintf(setter->name, sizeof(setter->name), "%s=", fname);
+                    setter->is_setter = true;
+                    snprintf(setter->accessor_ivar, sizeof(setter->accessor_ivar), "%s", fname);
+                    setter->param_count = 1;
+                    snprintf(setter->params[0].name, 64, "v");
+                    setter->params[0].type = vt_prim(SPINEL_TYPE_INTEGER);
+                }
+            }
+        }
+    }
 
     if (!node->body) return;
     pm_node_t *body = (pm_node_t *)node->body;
