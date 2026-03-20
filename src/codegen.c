@@ -1196,12 +1196,12 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
             }
         }
 
-        /* Dir.home → STRING */
+        /* Dir.home → STRING, Dir.glob → STR_ARRAY */
         if (call->receiver && PM_NODE_TYPE(call->receiver) == PM_CONSTANT_READ_NODE) {
             pm_constant_read_node_t *cr = (pm_constant_read_node_t *)call->receiver;
-            if (ceq(ctx, cr->name, "Dir") && strcmp(method, "home") == 0) {
-                free(method);
-                return vt_prim(SPINEL_TYPE_STRING);
+            if (ceq(ctx, cr->name, "Dir")) {
+                if (strcmp(method, "home") == 0) { free(method); return vt_prim(SPINEL_TYPE_STRING); }
+                if (strcmp(method, "glob") == 0) { free(method); return vt_prim(SPINEL_TYPE_STR_ARRAY); }
             }
         }
 
@@ -1317,8 +1317,11 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
                     strcmp(method, "sum") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
                 if (strcmp(method, "sort") == 0 || strcmp(method, "uniq") == 0) { free(method); return vt_prim(SPINEL_TYPE_ARRAY); }
                 if (strcmp(method, "include?") == 0) { free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
-                if (strcmp(method, "each") == 0) { free(method); return vt_prim(SPINEL_TYPE_ARRAY); }
+                if (strcmp(method, "each") == 0 || strcmp(method, "each_with_index") == 0) { free(method); return vt_prim(SPINEL_TYPE_ARRAY); }
                 if (strcmp(method, "join") == 0) { free(method); return vt_prim(SPINEL_TYPE_STRING); }
+                if (strcmp(method, "any?") == 0) { free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
+                if (strcmp(method, "find") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
+                if (strcmp(method, "filter_map") == 0) { free(method); return vt_prim(SPINEL_TYPE_ARRAY); }
             }
             /* sp_RbArray methods */
             if (recv_t.kind == SPINEL_TYPE_RB_ARRAY) {
@@ -1357,10 +1360,14 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
                 if (strcmp(method, "=~") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
                 if (strcmp(method, "count") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
                 if (strcmp(method, "start_with?") == 0 || strcmp(method, "end_with?") == 0) { free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
+                if (strcmp(method, "empty?") == 0) { free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
                 if (strcmp(method, "==") == 0 || strcmp(method, "!=") == 0 || strcmp(method, "<") == 0 ||
                     strcmp(method, ">") == 0 || strcmp(method, "<=") == 0 || strcmp(method, ">=") == 0) { free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
                 if (strcmp(method, "*") == 0) { free(method); return vt_prim(SPINEL_TYPE_STRING); }
                 if (strcmp(method, "split") == 0) { free(method); return vt_prim(SPINEL_TYPE_STR_ARRAY); }
+                if (strcmp(method, "to_i") == 0 || strcmp(method, "ord") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
+                if (strcmp(method, "to_sym") == 0) { free(method); return vt_prim(SPINEL_TYPE_STRING); }
+                if (strcmp(method, "each_line") == 0) { free(method); return vt_prim(SPINEL_TYPE_STR_ARRAY); }
             }
             /* sp_String (mutable string) methods */
             if (recv_t.kind == SPINEL_TYPE_SP_STRING) {
@@ -1393,6 +1400,14 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
             /* String array methods */
             if (recv_t.kind == SPINEL_TYPE_STR_ARRAY) {
                 if (strcmp(method, "length") == 0 || strcmp(method, "size") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
+                if (strcmp(method, "each") == 0 || strcmp(method, "each_with_index") == 0) { free(method); return vt_prim(SPINEL_TYPE_STR_ARRAY); }
+                if (strcmp(method, "any?") == 0) { free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
+                if (strcmp(method, "find") == 0 || strcmp(method, "max_by") == 0) { free(method); return vt_prim(SPINEL_TYPE_STRING); }
+                if (strcmp(method, "filter_map") == 0) { free(method); return vt_prim(SPINEL_TYPE_STR_ARRAY); }
+                if (strcmp(method, "join") == 0) { free(method); return vt_prim(SPINEL_TYPE_STRING); }
+                if (strcmp(method, "[]") == 0) { free(method); return vt_prim(SPINEL_TYPE_STRING); }
+                if (strcmp(method, "first") == 0 || strcmp(method, "last") == 0) { free(method); return vt_prim(SPINEL_TYPE_STRING); }
+                if (strcmp(method, "empty?") == 0) { free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
             }
             /* Proc#call → returns INTEGER (mrb_int from sp_Proc_call) */
             if (recv_t.kind == SPINEL_TYPE_PROC && strcmp(method, "call") == 0) {
@@ -1400,7 +1415,7 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
             }
             /* Numeric methods */
             if (recv_t.kind == SPINEL_TYPE_INTEGER) {
-                if (strcmp(method, "abs") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
+                if (strcmp(method, "abs") == 0 || strcmp(method, "clamp") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
                 if (strcmp(method, "even?") == 0 || strcmp(method, "odd?") == 0 ||
                     strcmp(method, "zero?") == 0 || strcmp(method, "positive?") == 0 ||
                     strcmp(method, "negative?") == 0) { free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
@@ -1467,9 +1482,21 @@ static vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
                 return vt_prim(SPINEL_TYPE_FLOAT);
             }
             if (strcmp(mod_name, "File") == 0) {
-                if (strcmp(method, "read") == 0) { free(mod_name); free(method); return vt_prim(SPINEL_TYPE_STRING); }
+                if (strcmp(method, "read") == 0 || strcmp(method, "join") == 0 ||
+                    strcmp(method, "expand_path") == 0 || strcmp(method, "basename") == 0 ||
+                    strcmp(method, "dirname") == 0 || strcmp(method, "readlink") == 0) {
+                    free(mod_name); free(method); return vt_prim(SPINEL_TYPE_STRING);
+                }
                 if (strcmp(method, "exist?") == 0 || strcmp(method, "exists?") == 0) { free(mod_name); free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
-                if (strcmp(method, "write") == 0 || strcmp(method, "delete") == 0) { free(mod_name); free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
+                if (strcmp(method, "write") == 0 || strcmp(method, "delete") == 0 ||
+                    strcmp(method, "rename") == 0 || strcmp(method, "size") == 0 ||
+                    strcmp(method, "mtime") == 0 || strcmp(method, "ctime") == 0 ||
+                    strcmp(method, "stat") == 0) {
+                    free(mod_name); free(method); return vt_prim(SPINEL_TYPE_INTEGER);
+                }
+            }
+            if (strcmp(mod_name, "Dir") == 0) {
+                if (strcmp(method, "glob") == 0) { free(mod_name); free(method); return vt_prim(SPINEL_TYPE_STR_ARRAY); }
             }
             /* Class method calls: ClassName.method → look up class method return type */
             {
@@ -3822,13 +3849,22 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
             }
         }
 
-        /* Dir.home → getenv("HOME") */
-        if (call->receiver && PM_NODE_TYPE(call->receiver) == PM_CONSTANT_READ_NODE &&
-            strcmp(method, "home") == 0) {
+        /* Dir.home → getenv("HOME"), Dir.glob(pat) → sp_Dir_glob(pat) */
+        if (call->receiver && PM_NODE_TYPE(call->receiver) == PM_CONSTANT_READ_NODE) {
             pm_constant_read_node_t *cr = (pm_constant_read_node_t *)call->receiver;
             if (ceq(ctx, cr->name, "Dir")) {
-                free(method);
-                return xstrdup("getenv(\"HOME\")");
+                if (strcmp(method, "home") == 0) {
+                    free(method);
+                    return xstrdup("getenv(\"HOME\")");
+                }
+                if (strcmp(method, "glob") == 0 && call->arguments &&
+                    call->arguments->arguments.size == 1) {
+                    char *pat = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                    char *r = sfmt("sp_Dir_glob(%s)", pat);
+                    free(pat); free(method);
+                    ctx->needs_str_split = true; /* sp_Dir_glob depends on sp_StrArray */
+                    return r;
+                }
             }
         }
 
@@ -4023,6 +4059,71 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                         free(path); free(method);
                         return r;
                     }
+                    if (strcmp(method, "join") == 0 && call->arguments &&
+                        call->arguments->arguments.size == 2) {
+                        char *a = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *b = codegen_expr(ctx, call->arguments->arguments.nodes[1]);
+                        char *r = sfmt("sp_File_join(%s, %s)", a, b);
+                        free(a); free(b); free(method);
+                        return r;
+                    }
+                    if (strcmp(method, "expand_path") == 0 && call->arguments &&
+                        call->arguments->arguments.size == 1) {
+                        char *path = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *r = sfmt("sp_File_expand_path(%s)", path);
+                        free(path); free(method);
+                        return r;
+                    }
+                    if (strcmp(method, "basename") == 0 && call->arguments &&
+                        call->arguments->arguments.size == 1) {
+                        char *path = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *r = sfmt("sp_File_basename(%s)", path);
+                        free(path); free(method);
+                        return r;
+                    }
+                    if (strcmp(method, "dirname") == 0 && call->arguments &&
+                        call->arguments->arguments.size == 1) {
+                        char *path = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *r = sfmt("sp_File_dirname(%s)", path);
+                        free(path); free(method);
+                        return r;
+                    }
+                    if (strcmp(method, "rename") == 0 && call->arguments &&
+                        call->arguments->arguments.size == 2) {
+                        char *a = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *b = codegen_expr(ctx, call->arguments->arguments.nodes[1]);
+                        char *r = sfmt("sp_File_rename(%s, %s)", a, b);
+                        free(a); free(b); free(method);
+                        return r;
+                    }
+                    if (strcmp(method, "size") == 0 && call->arguments &&
+                        call->arguments->arguments.size == 1) {
+                        char *path = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *r = sfmt("sp_File_size(%s)", path);
+                        free(path); free(method);
+                        return r;
+                    }
+                    if (strcmp(method, "mtime") == 0 && call->arguments &&
+                        call->arguments->arguments.size == 1) {
+                        char *path = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *r = sfmt("sp_File_mtime(%s)", path);
+                        free(path); free(method);
+                        return r;
+                    }
+                    if ((strcmp(method, "stat") == 0 || strcmp(method, "ctime") == 0) &&
+                        call->arguments && call->arguments->arguments.size == 1) {
+                        char *path = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *r = sfmt("sp_File_ctime(%s)", path);
+                        free(path); free(method);
+                        return r;
+                    }
+                    if (strcmp(method, "readlink") == 0 && call->arguments &&
+                        call->arguments->arguments.size == 1) {
+                        char *path = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                        char *r = sfmt("sp_File_readlink(%s)", path);
+                        free(path); free(method);
+                        return r;
+                    }
                 }
                 /* Time class methods */
                 if (ceq(ctx, cr->name, "Time")) {
@@ -4174,6 +4275,109 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                     char *arg = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
                     r = sfmt("(!sp_IntArray_neq(%s, %s))", recv, arg);
                     free(arg);
+                }
+                else if (strcmp(method, "any?") == 0 && call->block &&
+                         PM_NODE_TYPE(call->block) == PM_BLOCK_NODE) {
+                    pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                    char *bpname = NULL;
+                    if (blk->parameters && PM_NODE_TYPE(blk->parameters) == PM_BLOCK_PARAMETERS_NODE) {
+                        pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+                        if (bp->parameters && bp->parameters->requireds.size > 0) {
+                            pm_node_t *p = bp->parameters->requireds.nodes[0];
+                            if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                                bpname = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                        }
+                    }
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "mrb_bool _any_%d = FALSE;\n", tmp);
+                    emit(ctx, "for (mrb_int _ai_%d = 0; _ai_%d < sp_IntArray_length(%s); _ai_%d++) {\n", tmp, tmp, recv, tmp);
+                    ctx->indent++;
+                    if (bpname) {
+                        char *cn = make_cname(bpname, false);
+                        emit(ctx, "mrb_int %s = sp_IntArray_get(%s, _ai_%d);\n", cn, recv, tmp);
+                        free(cn);
+                    }
+                    if (blk->body) {
+                        pm_statements_node_t *stmts = (pm_statements_node_t *)blk->body;
+                        if (stmts->body.size > 0) {
+                            char *cond = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                            emit(ctx, "if (%s) { _any_%d = TRUE; break; }\n", cond, tmp);
+                            free(cond);
+                        }
+                    }
+                    ctx->indent--;
+                    emit(ctx, "}\n");
+                    free(bpname);
+                    r = sfmt("_any_%d", tmp);
+                }
+                else if (strcmp(method, "find") == 0 && call->block &&
+                         PM_NODE_TYPE(call->block) == PM_BLOCK_NODE) {
+                    pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                    char *bpname = NULL;
+                    if (blk->parameters && PM_NODE_TYPE(blk->parameters) == PM_BLOCK_PARAMETERS_NODE) {
+                        pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+                        if (bp->parameters && bp->parameters->requireds.size > 0) {
+                            pm_node_t *p = bp->parameters->requireds.nodes[0];
+                            if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                                bpname = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                        }
+                    }
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "mrb_int _find_%d = 0;\n", tmp);
+                    emit(ctx, "for (mrb_int _fi_%d = 0; _fi_%d < sp_IntArray_length(%s); _fi_%d++) {\n", tmp, tmp, recv, tmp);
+                    ctx->indent++;
+                    if (bpname) {
+                        char *cn = make_cname(bpname, false);
+                        emit(ctx, "mrb_int %s = sp_IntArray_get(%s, _fi_%d);\n", cn, recv, tmp);
+                        free(cn);
+                    }
+                    if (blk->body) {
+                        pm_statements_node_t *stmts = (pm_statements_node_t *)blk->body;
+                        if (stmts->body.size > 0) {
+                            char *cond = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                            emit(ctx, "if (%s) { _find_%d = sp_IntArray_get(%s, _fi_%d); break; }\n", cond, tmp, recv, tmp);
+                            free(cond);
+                        }
+                    }
+                    ctx->indent--;
+                    emit(ctx, "}\n");
+                    free(bpname);
+                    r = sfmt("_find_%d", tmp);
+                }
+                else if (strcmp(method, "filter_map") == 0 && call->block &&
+                         PM_NODE_TYPE(call->block) == PM_BLOCK_NODE) {
+                    pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                    char *bpname = NULL;
+                    if (blk->parameters && PM_NODE_TYPE(blk->parameters) == PM_BLOCK_PARAMETERS_NODE) {
+                        pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+                        if (bp->parameters && bp->parameters->requireds.size > 0) {
+                            pm_node_t *p = bp->parameters->requireds.nodes[0];
+                            if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                                bpname = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                        }
+                    }
+                    int tmp = ctx->temp_counter++;
+                    ctx->needs_gc = true;
+                    emit(ctx, "sp_IntArray *_fm_%d = sp_IntArray_new();\n", tmp);
+                    emit(ctx, "for (mrb_int _fmi_%d = 0; _fmi_%d < sp_IntArray_length(%s); _fmi_%d++) {\n", tmp, tmp, recv, tmp);
+                    ctx->indent++;
+                    if (bpname) {
+                        char *cn = make_cname(bpname, false);
+                        emit(ctx, "mrb_int %s = sp_IntArray_get(%s, _fmi_%d);\n", cn, recv, tmp);
+                        free(cn);
+                    }
+                    if (blk->body) {
+                        pm_statements_node_t *stmts = (pm_statements_node_t *)blk->body;
+                        if (stmts->body.size > 0) {
+                            char *val = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                            emit(ctx, "sp_IntArray_push(_fm_%d, %s);\n", tmp, val);
+                            free(val);
+                        }
+                    }
+                    ctx->indent--;
+                    emit(ctx, "}\n");
+                    free(bpname);
+                    r = sfmt("_fm_%d", tmp);
                 }
                 if (r) {
                     free(recv); free(method);
@@ -4636,6 +4840,19 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                         free(arg);
                     }
                 }
+                else if (strcmp(method, "empty?") == 0)
+                    r = sfmt("(strlen(%s) == 0)", recv);
+                else if (strcmp(method, "to_i") == 0)
+                    r = sfmt("((mrb_int)strtol(%s, NULL, 10))", recv);
+                else if (strcmp(method, "ord") == 0)
+                    r = sfmt("((mrb_int)(unsigned char)(%s)[0])", recv);
+                else if (strcmp(method, "to_sym") == 0)
+                    r = sfmt("%s", recv); /* symbols are strings in Spinel */
+                else if (strcmp(method, "each_line") == 0) {
+                    /* Return an sp_StrArray of lines */
+                    ctx->needs_str_split = true;
+                    r = sfmt("sp_str_split(%s, \"\\n\")", recv);
+                }
                 if (r) {
                     free(recv); free(method);
                     return r;
@@ -4707,6 +4924,173 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                 char *r = NULL;
                 if (strcmp(method, "length") == 0 || strcmp(method, "size") == 0)
                     r = sfmt("sp_StrArray_length(%s)", recv);
+                else if (strcmp(method, "[]") == 0 && call->arguments &&
+                         call->arguments->arguments.size == 1) {
+                    char *idx = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                    r = sfmt("(%s)->data[%s]", recv, idx);
+                    free(idx);
+                }
+                else if (strcmp(method, "first") == 0)
+                    r = sfmt("(%s)->data[0]", recv);
+                else if (strcmp(method, "last") == 0)
+                    r = sfmt("(%s)->data[sp_StrArray_length(%s) - 1]", recv, recv);
+                else if (strcmp(method, "empty?") == 0)
+                    r = sfmt("(sp_StrArray_length(%s) == 0)", recv);
+                else if (strcmp(method, "join") == 0 && call->arguments &&
+                         call->arguments->arguments.size == 1) {
+                    char *sep = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "const char *_sj_%d; { size_t _total_%d = 0; size_t _sl_%d = strlen(%s);\n", tmp, tmp, tmp, sep);
+                    emit(ctx, "  for (mrb_int _ji_%d = 0; _ji_%d < sp_StrArray_length(%s); _ji_%d++) _total_%d += strlen((%s)->data[_ji_%d]) + _sl_%d;\n",
+                         tmp, tmp, recv, tmp, tmp, recv, tmp, tmp);
+                    emit(ctx, "  char *_jbuf_%d = (char *)malloc(_total_%d + 1); size_t _jp_%d = 0;\n", tmp, tmp, tmp);
+                    emit(ctx, "  for (mrb_int _ji_%d = 0; _ji_%d < sp_StrArray_length(%s); _ji_%d++) {\n", tmp, tmp, recv, tmp);
+                    emit(ctx, "    if (_ji_%d > 0) { memcpy(_jbuf_%d + _jp_%d, %s, _sl_%d); _jp_%d += _sl_%d; }\n", tmp, tmp, tmp, sep, tmp, tmp, tmp);
+                    emit(ctx, "    size_t _el_%d = strlen((%s)->data[_ji_%d]); memcpy(_jbuf_%d + _jp_%d, (%s)->data[_ji_%d], _el_%d); _jp_%d += _el_%d;\n",
+                         tmp, recv, tmp, tmp, tmp, recv, tmp, tmp, tmp, tmp);
+                    emit(ctx, "  } _jbuf_%d[_jp_%d] = '\\0'; _sj_%d = _jbuf_%d; }\n", tmp, tmp, tmp, tmp);
+                    free(sep);
+                    r = sfmt("_sj_%d", tmp);
+                }
+                else if (strcmp(method, "any?") == 0 && call->block &&
+                         PM_NODE_TYPE(call->block) == PM_BLOCK_NODE) {
+                    /* arr.any? { |x| cond } → iterate and check */
+                    pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                    char *bpname = NULL;
+                    if (blk->parameters && PM_NODE_TYPE(blk->parameters) == PM_BLOCK_PARAMETERS_NODE) {
+                        pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+                        if (bp->parameters && bp->parameters->requireds.size > 0) {
+                            pm_node_t *p = bp->parameters->requireds.nodes[0];
+                            if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                                bpname = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                        }
+                    }
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "mrb_bool _any_%d = FALSE;\n", tmp);
+                    emit(ctx, "for (mrb_int _ai_%d = 0; _ai_%d < sp_StrArray_length(%s); _ai_%d++) {\n", tmp, tmp, recv, tmp);
+                    ctx->indent++;
+                    if (bpname) {
+                        char *cn = make_cname(bpname, false);
+                        emit(ctx, "const char *%s = (%s)->data[_ai_%d];\n", cn, recv, tmp);
+                        free(cn);
+                    }
+                    if (blk->body) {
+                        pm_statements_node_t *stmts = (pm_statements_node_t *)blk->body;
+                        if (stmts->body.size > 0) {
+                            char *cond = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                            emit(ctx, "if (%s) { _any_%d = TRUE; break; }\n", cond, tmp);
+                            free(cond);
+                        }
+                    }
+                    ctx->indent--;
+                    emit(ctx, "}\n");
+                    free(bpname);
+                    r = sfmt("_any_%d", tmp);
+                }
+                else if (strcmp(method, "find") == 0 && call->block &&
+                         PM_NODE_TYPE(call->block) == PM_BLOCK_NODE) {
+                    pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                    char *bpname = NULL;
+                    if (blk->parameters && PM_NODE_TYPE(blk->parameters) == PM_BLOCK_PARAMETERS_NODE) {
+                        pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+                        if (bp->parameters && bp->parameters->requireds.size > 0) {
+                            pm_node_t *p = bp->parameters->requireds.nodes[0];
+                            if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                                bpname = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                        }
+                    }
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "const char *_find_%d = \"\";\n", tmp);
+                    emit(ctx, "for (mrb_int _fi_%d = 0; _fi_%d < sp_StrArray_length(%s); _fi_%d++) {\n", tmp, tmp, recv, tmp);
+                    ctx->indent++;
+                    if (bpname) {
+                        char *cn = make_cname(bpname, false);
+                        emit(ctx, "const char *%s = (%s)->data[_fi_%d];\n", cn, recv, tmp);
+                        free(cn);
+                    }
+                    if (blk->body) {
+                        pm_statements_node_t *stmts = (pm_statements_node_t *)blk->body;
+                        if (stmts->body.size > 0) {
+                            char *cond = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                            emit(ctx, "if (%s) { _find_%d = (%s)->data[_fi_%d]; break; }\n", cond, tmp, recv, tmp);
+                            free(cond);
+                        }
+                    }
+                    ctx->indent--;
+                    emit(ctx, "}\n");
+                    free(bpname);
+                    r = sfmt("_find_%d", tmp);
+                }
+                else if (strcmp(method, "max_by") == 0 && call->block &&
+                         PM_NODE_TYPE(call->block) == PM_BLOCK_NODE) {
+                    pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                    char *bpname = NULL;
+                    if (blk->parameters && PM_NODE_TYPE(blk->parameters) == PM_BLOCK_PARAMETERS_NODE) {
+                        pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+                        if (bp->parameters && bp->parameters->requireds.size > 0) {
+                            pm_node_t *p = bp->parameters->requireds.nodes[0];
+                            if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                                bpname = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                        }
+                    }
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "const char *_maxby_%d = \"\"; mrb_int _maxval_%d = -9223372036854775807LL;\n", tmp, tmp);
+                    emit(ctx, "for (mrb_int _mi_%d = 0; _mi_%d < sp_StrArray_length(%s); _mi_%d++) {\n", tmp, tmp, recv, tmp);
+                    ctx->indent++;
+                    if (bpname) {
+                        char *cn = make_cname(bpname, false);
+                        emit(ctx, "const char *%s = (%s)->data[_mi_%d];\n", cn, recv, tmp);
+                        free(cn);
+                    }
+                    if (blk->body) {
+                        pm_statements_node_t *stmts = (pm_statements_node_t *)blk->body;
+                        if (stmts->body.size > 0) {
+                            char *val = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                            emit(ctx, "{ mrb_int _v_%d = %s; if (_v_%d > _maxval_%d) { _maxval_%d = _v_%d; _maxby_%d = (%s)->data[_mi_%d]; } }\n",
+                                 tmp, val, tmp, tmp, tmp, tmp, tmp, recv, tmp);
+                            free(val);
+                        }
+                    }
+                    ctx->indent--;
+                    emit(ctx, "}\n");
+                    free(bpname);
+                    r = sfmt("_maxby_%d", tmp);
+                }
+                else if (strcmp(method, "filter_map") == 0 && call->block &&
+                         PM_NODE_TYPE(call->block) == PM_BLOCK_NODE) {
+                    /* filter_map → just map (no nil in StrArray) */
+                    pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                    char *bpname = NULL;
+                    if (blk->parameters && PM_NODE_TYPE(blk->parameters) == PM_BLOCK_PARAMETERS_NODE) {
+                        pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+                        if (bp->parameters && bp->parameters->requireds.size > 0) {
+                            pm_node_t *p = bp->parameters->requireds.nodes[0];
+                            if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                                bpname = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                        }
+                    }
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "sp_StrArray *_fm_%d = sp_StrArray_new();\n", tmp);
+                    emit(ctx, "for (mrb_int _fmi_%d = 0; _fmi_%d < sp_StrArray_length(%s); _fmi_%d++) {\n", tmp, tmp, recv, tmp);
+                    ctx->indent++;
+                    if (bpname) {
+                        char *cn = make_cname(bpname, false);
+                        emit(ctx, "const char *%s = (%s)->data[_fmi_%d];\n", cn, recv, tmp);
+                        free(cn);
+                    }
+                    if (blk->body) {
+                        pm_statements_node_t *stmts = (pm_statements_node_t *)blk->body;
+                        if (stmts->body.size > 0) {
+                            char *val = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                            emit(ctx, "sp_StrArray_push(_fm_%d, %s);\n", tmp, val);
+                            free(val);
+                        }
+                    }
+                    ctx->indent--;
+                    emit(ctx, "}\n");
+                    free(bpname);
+                    r = sfmt("_fm_%d", tmp);
+                }
                 if (r) {
                     free(recv); free(method);
                     return r;
@@ -4736,6 +5120,13 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                     r = sfmt("((mrb_int)pow((double)%s, (double)%s))", recv, exp);
                     free(exp);
                 }
+                else if (strcmp(method, "clamp") == 0 && call->arguments &&
+                         call->arguments->arguments.size == 2) {
+                    char *lo = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                    char *hi = codegen_expr(ctx, call->arguments->arguments.nodes[1]);
+                    r = sfmt("((%s) < (%s) ? (%s) : (%s) > (%s) ? (%s) : (%s))", recv, lo, lo, recv, hi, hi, recv);
+                    free(lo); free(hi);
+                }
                 if (r) { free(recv); free(method); return r; }
                 free(recv);
             }
@@ -4752,6 +5143,13 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                     r = sfmt("((mrb_int)round(%s))", recv);
                 if (r) { free(recv); free(method); return r; }
                 free(recv);
+            }
+
+            /* to_sym → no-op (symbols are strings in Spinel) */
+            if (strcmp(method, "to_sym") == 0 && call->receiver) {
+                char *recv = codegen_expr(ctx, call->receiver);
+                free(method);
+                return recv;
             }
 
             /* freeze → no-op (return self expression), frozen? → TRUE */
@@ -4990,8 +5388,9 @@ static char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                 free(recv); free(method);
                 return r;
             }
-            if (strcmp(method, "to_f") == 0 || strcmp(method, "to_i") == 0) {
-                /* Identity for matching types */
+            if ((strcmp(method, "to_f") == 0 || strcmp(method, "to_i") == 0) &&
+                recv_t.kind != SPINEL_TYPE_STRING) {
+                /* Identity for matching types (not strings — handled above) */
                 char *recv = codegen_expr(ctx, call->receiver);
                 free(method);
                 return recv;
@@ -6750,6 +7149,100 @@ static void codegen_stmt(codegen_ctx_t *ctx, pm_node_t *node) {
             break;
         }
 
+        /* each_with_index on Array/StrArray → for loop with index (statement context) */
+        if (call->block && PM_NODE_TYPE(call->block) == PM_BLOCK_NODE &&
+            strcmp(method, "each_with_index") == 0 && call->receiver) {
+            vtype_t recv_t = infer_type(ctx, call->receiver);
+            if (recv_t.kind == SPINEL_TYPE_ARRAY || recv_t.kind == SPINEL_TYPE_STR_ARRAY) {
+                pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                char *recv = codegen_expr(ctx, call->receiver);
+                char *bpname = NULL, *bpidx = NULL;
+                if (blk->parameters && PM_NODE_TYPE(blk->parameters) == PM_BLOCK_PARAMETERS_NODE) {
+                    pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+                    if (bp->parameters && bp->parameters->requireds.size > 0) {
+                        pm_node_t *p = bp->parameters->requireds.nodes[0];
+                        if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                            bpname = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                    }
+                    if (bp->parameters && bp->parameters->requireds.size > 1) {
+                        pm_node_t *p = bp->parameters->requireds.nodes[1];
+                        if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                            bpidx = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                    }
+                }
+                int tmp = ctx->temp_counter++;
+                bool is_str = (recv_t.kind == SPINEL_TYPE_STR_ARRAY);
+                const char *len_fn = is_str ? "sp_StrArray_length" : "sp_IntArray_length";
+                emit(ctx, "for (mrb_int _ei_%d = 0; _ei_%d < %s(%s); _ei_%d++) {\n",
+                     tmp, tmp, len_fn, recv, tmp);
+                ctx->indent++;
+                if (bpname) {
+                    char *cn = make_cname(bpname, false);
+                    if (is_str)
+                        emit(ctx, "const char *%s = (%s)->data[_ei_%d];\n", cn, recv, tmp);
+                    else
+                        emit(ctx, "mrb_int %s = sp_IntArray_get(%s, _ei_%d);\n", cn, recv, tmp);
+                    free(cn);
+                }
+                if (bpidx) {
+                    char *cn = make_cname(bpidx, false);
+                    emit(ctx, "mrb_int %s = _ei_%d;\n", cn, tmp);
+                    free(cn);
+                }
+                if (blk->body) {
+                    bool saved_ir2 = ctx->implicit_return;
+                    ctx->implicit_return = false;
+                    codegen_stmts(ctx, (pm_node_t *)blk->body);
+                    ctx->implicit_return = saved_ir2;
+                }
+                ctx->indent--;
+                emit(ctx, "}\n");
+                free(recv); free(bpname); free(bpidx); free(method);
+                break;
+            }
+        }
+
+        /* String#each_line with block → split by newline and iterate */
+        if (call->block && PM_NODE_TYPE(call->block) == PM_BLOCK_NODE &&
+            strcmp(method, "each_line") == 0 && call->receiver) {
+            vtype_t recv_t = infer_type(ctx, call->receiver);
+            if (recv_t.kind == SPINEL_TYPE_STRING) {
+                pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                char *recv = codegen_expr(ctx, call->receiver);
+                char *bpname = NULL;
+                if (blk->parameters && PM_NODE_TYPE(blk->parameters) == PM_BLOCK_PARAMETERS_NODE) {
+                    pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+                    if (bp->parameters && bp->parameters->requireds.size > 0) {
+                        pm_node_t *p = bp->parameters->requireds.nodes[0];
+                        if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                            bpname = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                    }
+                }
+                ctx->needs_str_split = true;
+                int tmp = ctx->temp_counter++;
+                emit(ctx, "{ sp_StrArray *_lines_%d = sp_str_split(%s, \"\\n\");\n", tmp, recv);
+                emit(ctx, "for (mrb_int _li_%d = 0; _li_%d < sp_StrArray_length(_lines_%d); _li_%d++) {\n",
+                     tmp, tmp, tmp, tmp);
+                ctx->indent++;
+                if (bpname) {
+                    char *cn = make_cname(bpname, false);
+                    emit(ctx, "const char *%s = _lines_%d->data[_li_%d];\n", cn, tmp, tmp);
+                    free(cn);
+                }
+                if (blk->body) {
+                    bool saved_ir2 = ctx->implicit_return;
+                    ctx->implicit_return = false;
+                    codegen_stmts(ctx, (pm_node_t *)blk->body);
+                    ctx->implicit_return = saved_ir2;
+                }
+                ctx->indent--;
+                emit(ctx, "}\n");
+                emit(ctx, "}\n");
+                free(recv); free(bpname); free(method);
+                break;
+            }
+        }
+
         /* Array#each with block → inline for loop (statement context) */
         if (call->block && PM_NODE_TYPE(call->block) == PM_BLOCK_NODE &&
             strcmp(method, "each") == 0 && call->receiver) {
@@ -6871,6 +7364,40 @@ static void codegen_stmt(codegen_ctx_t *ctx, pm_node_t *node) {
                 if (blk->body) codegen_stmts(ctx, (pm_node_t *)blk->body);
                 ctx->indent--;
                 emit(ctx, "}\n");
+                emit(ctx, "}\n");
+                free(recv); free(bpname); free(method);
+                break;
+            }
+
+            /* sp_StrArray#each with block → inline for loop with string elements */
+            if (recv_t.kind == SPINEL_TYPE_STR_ARRAY) {
+                pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                char *recv = codegen_expr(ctx, call->receiver);
+                char *bpname = NULL;
+                if (blk->parameters && PM_NODE_TYPE(blk->parameters) == PM_BLOCK_PARAMETERS_NODE) {
+                    pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+                    if (bp->parameters && bp->parameters->requireds.size > 0) {
+                        pm_node_t *p = bp->parameters->requireds.nodes[0];
+                        if (PM_NODE_TYPE(p) == PM_REQUIRED_PARAMETER_NODE)
+                            bpname = cstr(ctx, ((pm_required_parameter_node_t *)p)->name);
+                    }
+                }
+                int tmp = ctx->temp_counter++;
+                emit(ctx, "for (mrb_int _ei_%d = 0; _ei_%d < sp_StrArray_length(%s); _ei_%d++) {\n",
+                     tmp, tmp, recv, tmp);
+                ctx->indent++;
+                if (bpname) {
+                    char *cn = make_cname(bpname, false);
+                    emit(ctx, "const char *%s = (%s)->data[_ei_%d];\n", cn, recv, tmp);
+                    free(cn);
+                }
+                if (blk->body) {
+                    bool saved_ir2 = ctx->implicit_return;
+                    ctx->implicit_return = false;
+                    codegen_stmts(ctx, (pm_node_t *)blk->body);
+                    ctx->implicit_return = saved_ir2;
+                }
+                ctx->indent--;
                 emit(ctx, "}\n");
                 free(recv); free(bpname); free(method);
                 break;
@@ -8225,7 +8752,10 @@ static void emit_header(codegen_ctx_t *ctx) {
     emit_raw(ctx, "#include <ctype.h>\n");
     emit_raw(ctx, "#include <unistd.h>\n");
     emit_raw(ctx, "#include <signal.h>\n");
-    emit_raw(ctx, "#include <stdarg.h>\n\n");
+    emit_raw(ctx, "#include <stdarg.h>\n");
+    emit_raw(ctx, "#include <libgen.h>\n");
+    emit_raw(ctx, "#include <glob.h>\n");
+    emit_raw(ctx, "#include <sys/stat.h>\n\n");
     emit_raw(ctx, "typedef int64_t mrb_int;\n");
     emit_raw(ctx, "typedef double mrb_float;\n");
     emit_raw(ctx, "typedef bool mrb_bool;\n");
@@ -8387,7 +8917,32 @@ static void emit_header(codegen_ctx_t *ctx) {
     emit_raw(ctx, "static mrb_bool sp_File_exist(const char *path) {\n");
     emit_raw(ctx, "    FILE *f = fopen(path, \"r\"); if (f) { fclose(f); return TRUE; } return FALSE;\n}\n");
     emit_raw(ctx, "static mrb_int sp_File_delete(const char *path) {\n");
-    emit_raw(ctx, "    return remove(path) == 0 ? 1 : 0;\n}\n\n");
+    emit_raw(ctx, "    return remove(path) == 0 ? 1 : 0;\n}\n");
+    emit_raw(ctx, "static const char *sp_File_join(const char *a, const char *b) {\n");
+    emit_raw(ctx, "    size_t la = strlen(a), lb = strlen(b);\n");
+    emit_raw(ctx, "    char *r = (char *)malloc(la + 1 + lb + 1);\n");
+    emit_raw(ctx, "    memcpy(r, a, la); r[la] = '/'; memcpy(r + la + 1, b, lb + 1); return r;\n}\n");
+    emit_raw(ctx, "static const char *sp_File_expand_path(const char *path) {\n");
+    emit_raw(ctx, "    char *r = realpath(path, NULL); return r ? r : path;\n}\n");
+    emit_raw(ctx, "static const char *sp_File_basename(const char *path) {\n");
+    emit_raw(ctx, "    char *tmp = (char *)malloc(strlen(path) + 1); strcpy(tmp, path);\n");
+    emit_raw(ctx, "    const char *b = basename(tmp); char *r = (char *)malloc(strlen(b) + 1);\n");
+    emit_raw(ctx, "    strcpy(r, b); free(tmp); return r;\n}\n");
+    emit_raw(ctx, "static const char *sp_File_dirname(const char *path) {\n");
+    emit_raw(ctx, "    char *tmp = (char *)malloc(strlen(path) + 1); strcpy(tmp, path);\n");
+    emit_raw(ctx, "    const char *d = dirname(tmp); char *r = (char *)malloc(strlen(d) + 1);\n");
+    emit_raw(ctx, "    strcpy(r, d); free(tmp); return r;\n}\n");
+    emit_raw(ctx, "static mrb_int sp_File_rename(const char *old, const char *new_) {\n");
+    emit_raw(ctx, "    return rename(old, new_) == 0 ? 0 : -1;\n}\n");
+    emit_raw(ctx, "static mrb_int sp_File_size(const char *path) {\n");
+    emit_raw(ctx, "    struct stat st; if (stat(path, &st) != 0) return -1; return (mrb_int)st.st_size;\n}\n");
+    emit_raw(ctx, "static mrb_int sp_File_mtime(const char *path) {\n");
+    emit_raw(ctx, "    struct stat st; if (stat(path, &st) != 0) return 0; return (mrb_int)st.st_mtime;\n}\n");
+    emit_raw(ctx, "static mrb_int sp_File_ctime(const char *path) {\n");
+    emit_raw(ctx, "    struct stat st; if (stat(path, &st) != 0) return 0; return (mrb_int)st.st_ctime;\n}\n");
+    emit_raw(ctx, "static const char *sp_File_readlink(const char *path) {\n");
+    emit_raw(ctx, "    char *buf = (char *)malloc(4096); ssize_t n = readlink(path, buf, 4095);\n");
+    emit_raw(ctx, "    if (n < 0) { free(buf); return \"\"; } buf[n] = '\\0'; return buf;\n}\n\n");
 
     /* ---- Additional string helpers ---- */
     emit_raw(ctx, "static const char *sp_str_strip(const char *s) {\n");
@@ -9100,6 +9655,17 @@ static void emit_header(codegen_ctx_t *ctx) {
         emit_raw(ctx, "}\n\n");
     }
 
+    /* sp_Dir_glob depends on sp_StrArray */
+    if (ctx->needs_str_split) {
+        emit_raw(ctx, "static sp_StrArray *sp_Dir_glob(const char *pattern) {\n");
+        emit_raw(ctx, "    sp_StrArray *a = sp_StrArray_new();\n");
+        emit_raw(ctx, "    glob_t g; if (glob(pattern, 0, NULL, &g) == 0) {\n");
+        emit_raw(ctx, "        for (size_t i = 0; i < g.gl_pathc; i++) {\n");
+        emit_raw(ctx, "            char *s = (char *)malloc(strlen(g.gl_pathv[i]) + 1);\n");
+        emit_raw(ctx, "            strcpy(s, g.gl_pathv[i]); sp_StrArray_push(a, s);\n");
+        emit_raw(ctx, "        } globfree(&g); } return a;\n}\n\n");
+    }
+
     /* Built-in sp_StrIntHash for Hash support (only when hashes are used) */
     if (ctx->needs_hash) {
         emit_raw(ctx, "/* ---- Built-in string→integer hash table (insertion-ordered) ---- */\n");
@@ -9555,12 +10121,20 @@ static bool has_split_calls(codegen_ctx_t *ctx, pm_node_t *node) {
     }
     case PM_CALL_NODE: {
         pm_call_node_t *c = (pm_call_node_t *)node;
-        if (ceq(ctx, c->name, "split")) return true;
+        if (ceq(ctx, c->name, "split") || ceq(ctx, c->name, "each_line")) return true;
+        /* Dir.glob returns sp_StrArray */
+        if (ceq(ctx, c->name, "glob") && c->receiver &&
+            PM_NODE_TYPE(c->receiver) == PM_CONSTANT_READ_NODE) {
+            pm_constant_read_node_t *cr = (pm_constant_read_node_t *)c->receiver;
+            if (ceq(ctx, cr->name, "Dir")) return true;
+        }
         if (c->receiver && has_split_calls(ctx, c->receiver)) return true;
         if (c->arguments) {
             for (size_t i = 0; i < c->arguments->arguments.size; i++)
                 if (has_split_calls(ctx, c->arguments->arguments.nodes[i])) return true;
         }
+        /* Also recurse into blocks */
+        if (c->block && has_split_calls(ctx, c->block)) return true;
         return false;
     }
     case PM_IF_NODE: {
@@ -9576,6 +10150,10 @@ static bool has_split_calls(codegen_ctx_t *ctx, pm_node_t *node) {
     case PM_DEF_NODE: {
         pm_def_node_t *d = (pm_def_node_t *)node;
         return d->body ? has_split_calls(ctx, (pm_node_t *)d->body) : false;
+    }
+    case PM_BLOCK_NODE: {
+        pm_block_node_t *b = (pm_block_node_t *)node;
+        return b->body ? has_split_calls(ctx, (pm_node_t *)b->body) : false;
     }
     default:
         return false;
