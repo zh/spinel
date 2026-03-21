@@ -663,6 +663,26 @@ static void analyze_class(codegen_ctx_t *ctx, pm_class_node_t *node) {
                     }
                 }
             }
+            /* def_delegators "@target", :method1, :method2, ... */
+            if (strcmp(cname, "def_delegators") == 0 && call->arguments &&
+                call->arguments->arguments.size >= 2) {
+                /* First arg is a string (delegate target), remaining are symbols */
+                for (size_t ai = 1; ai < call->arguments->arguments.size; ai++) {
+                    pm_node_t *arg = call->arguments->arguments.nodes[ai];
+                    if (PM_NODE_TYPE(arg) != PM_SYMBOL_NODE) continue;
+                    pm_symbol_node_t *sym = (pm_symbol_node_t *)arg;
+                    const uint8_t *src = pm_string_source(&sym->unescaped);
+                    size_t len = pm_string_length(&sym->unescaped);
+                    char dname[64];
+                    snprintf(dname, sizeof(dname), "%.*s", (int)len, (const char *)src);
+                    if (!find_method(cls, dname) && cls->method_count < MAX_METHODS) {
+                        method_info_t *m = &cls->methods[cls->method_count++];
+                        memset(m, 0, sizeof(*m));
+                        snprintf(m->name, sizeof(m->name), "%s", dname);
+                        m->return_type = vt_prim(SPINEL_TYPE_VALUE);
+                    }
+                }
+            }
             free(cname);
         }
         /* alias new_name old_name */

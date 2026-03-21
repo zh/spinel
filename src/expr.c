@@ -239,6 +239,24 @@ char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
         return r;
     }
 
+    case PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE: {
+        pm_instance_variable_operator_write_node_t *n =
+            (pm_instance_variable_operator_write_node_t *)node;
+        char *ivname = cstr(ctx, n->name);
+        const char *field = ivname + 1;  /* skip @ */
+        char *op = cstr(ctx, n->binary_operator);
+        char *val = codegen_expr(ctx, n->value);
+        char *r;
+        if (ctx->current_module)
+            r = sfmt("(sp_%s_%s %s= %s)", ctx->current_module->name, field, op, val);
+        else if (ctx->current_class && ctx->current_class->is_value_type)
+            r = sfmt("(self.%s %s= %s)", field, op, val);
+        else
+            r = sfmt("(self->%s %s= %s)", field, op, val);
+        free(ivname); free(op); free(val);
+        return r;
+    }
+
     case PM_CALL_NODE: {
         pm_call_node_t *call = (pm_call_node_t *)node;
 
@@ -1322,6 +1340,22 @@ char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                     r = sfmt("sp_IntArray_sort(%s)", recv);
                 else if (strcmp(method, "sort!") == 0)
                     r = sfmt("sp_IntArray_sort_bang(%s)", recv);
+                else if (strcmp(method, "uniq!") == 0) {
+                    /* In-place unique: O(n^2) remove duplicates */
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "{ mrb_int _uw_%d = 0;\n", tmp);
+                    emit(ctx, "  for (mrb_int _ui_%d = 0; _ui_%d < sp_IntArray_length(%s); _ui_%d++) {\n", tmp, tmp, recv, tmp);
+                    emit(ctx, "    mrb_int _uv_%d = sp_IntArray_get(%s, _ui_%d); mrb_bool _dup_%d = FALSE;\n", tmp, recv, tmp, tmp);
+                    emit(ctx, "    for (mrb_int _uj_%d = 0; _uj_%d < _uw_%d; _uj_%d++)\n", tmp, tmp, tmp, tmp);
+                    emit(ctx, "      if (%s->data[%s->start + _uj_%d] == _uv_%d) { _dup_%d = TRUE; break; }\n", recv, recv, tmp, tmp, tmp);
+                    emit(ctx, "    if (!_dup_%d) %s->data[%s->start + _uw_%d++] = _uv_%d;\n", tmp, recv, recv, tmp, tmp);
+                    emit(ctx, "  }\n");
+                    emit(ctx, "  %s->len = _uw_%d;\n", recv, tmp);
+                    emit(ctx, "}\n");
+                    r = sfmt("%s", recv);
+                }
+                else if (strcmp(method, "flatten!") == 0)
+                    r = sfmt("%s", recv);  /* no-op for IntArray (already flat) */
                 else if (strcmp(method, "min") == 0) {
                     int tmp = ctx->temp_counter++;
                     emit(ctx, "mrb_int _min_%d = sp_IntArray_get(%s, 0);\n", tmp, recv);
@@ -1839,6 +1873,47 @@ char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                     free(cn); free(bpname);
                     free(recv); free(method);
                     return sfmt("_sb_%d", tmp);
+                }
+
+                /* Array#sort_by! with block → in-place sort by key */
+                if (strcmp(method, "sort_by!") == 0 && call->block &&
+                    PM_NODE_TYPE(call->block) == PM_BLOCK_NODE) {
+                    pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                    char *bpname = extract_block_param(ctx, blk);
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "{ mrb_int _n_%d = sp_IntArray_length(%s);\n", tmp, recv);
+                    emit(ctx, "  mrb_int *_keys_%d = (mrb_int *)malloc(sizeof(mrb_int) * _n_%d);\n", tmp, tmp);
+                    emit(ctx, "  for (mrb_int _si_%d = 0; _si_%d < _n_%d; _si_%d++) {\n", tmp, tmp, tmp, tmp);
+                    char *cn = bpname ? make_cname(bpname, false) : xstrdup("_x");
+                    emit(ctx, "    mrb_int %s = sp_IntArray_get(%s, _si_%d);\n", cn, recv, tmp);
+                    if (blk->body) {
+                        pm_statements_node_t *stmts = (pm_statements_node_t *)blk->body;
+                        if (stmts->body.size > 0) {
+                            char *key = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                            emit(ctx, "    _keys_%d[_si_%d] = %s;\n", tmp, tmp, key);
+                            free(key);
+                        }
+                    }
+                    emit(ctx, "  }\n");
+                    /* Insertion sort by key, modifying original array in place */
+                    emit(ctx, "  for (mrb_int _i_%d = 1; _i_%d < _n_%d; _i_%d++) {\n", tmp, tmp, tmp, tmp);
+                    emit(ctx, "    mrb_int _kv_%d = _keys_%d[_i_%d]; mrb_int _dv_%d = %s->data[%s->start + _i_%d];\n",
+                         tmp, tmp, tmp, tmp, recv, recv, tmp);
+                    emit(ctx, "    mrb_int _j_%d = _i_%d - 1;\n", tmp, tmp);
+                    emit(ctx, "    while (_j_%d >= 0 && _keys_%d[_j_%d] > _kv_%d) {\n", tmp, tmp, tmp, tmp);
+                    emit(ctx, "      _keys_%d[_j_%d+1] = _keys_%d[_j_%d];\n", tmp, tmp, tmp, tmp);
+                    emit(ctx, "      %s->data[%s->start + _j_%d+1] = %s->data[%s->start + _j_%d];\n",
+                         recv, recv, tmp, recv, recv, tmp);
+                    emit(ctx, "      _j_%d--;\n", tmp);
+                    emit(ctx, "    }\n");
+                    emit(ctx, "    _keys_%d[_j_%d+1] = _kv_%d; %s->data[%s->start + _j_%d+1] = _dv_%d;\n",
+                         tmp, tmp, tmp, recv, recv, tmp, tmp);
+                    emit(ctx, "  }\n");
+                    emit(ctx, "  free(_keys_%d);\n", tmp);
+                    emit(ctx, "}\n");
+                    free(cn); free(bpname);
+                    free(method);
+                    return recv;  /* return original recv (in-place, returns self) */
                 }
 
                 /* Array#zip(other) → sp_RbArray of 2-element sp_RbArray pairs */

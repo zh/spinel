@@ -204,6 +204,43 @@ void codegen_stmt(codegen_ctx_t *ctx, pm_node_t *node) {
         break;
     }
 
+    case PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE: {
+        pm_instance_variable_operator_write_node_t *n =
+            (pm_instance_variable_operator_write_node_t *)node;
+        char *ivname = cstr(ctx, n->name);
+        const char *field = ivname + 1;  /* skip @ */
+        char *op = cstr(ctx, n->binary_operator);
+        char *val = codegen_expr(ctx, n->value);
+        if (ctx->current_module)
+            emit(ctx, "sp_%s_%s %s= %s;\n", ctx->current_module->name, field, op, val);
+        else if (ctx->current_class && ctx->current_class->is_value_type)
+            emit(ctx, "self.%s %s= %s;\n", field, op, val);
+        else if (ctx->current_class)
+            emit(ctx, "self->%s %s= %s;\n", field, op, val);
+        free(ivname); free(op); free(val);
+        break;
+    }
+
+    case PM_INDEX_OR_WRITE_NODE: {
+        /* h[k] ||= v → if (!h[k]) h[k] = v */
+        pm_index_or_write_node_t *n = (pm_index_or_write_node_t *)node;
+        if (n->arguments && n->arguments->arguments.size == 1) {
+            vtype_t recv_t = infer_type(ctx, n->receiver);
+            char *recv = codegen_expr(ctx, n->receiver);
+            char *key = codegen_expr(ctx, n->arguments->arguments.nodes[0]);
+            char *val = codegen_expr(ctx, n->value);
+            if (recv_t.kind == SPINEL_TYPE_HASH) {
+                emit(ctx, "if (!sp_StrIntHash_get(%s, %s)) sp_StrIntHash_set(%s, %s, %s);\n",
+                     recv, key, recv, key, val);
+            } else if (recv_t.kind == SPINEL_TYPE_RB_HASH) {
+                emit(ctx, "if (sp_RbHash_get(%s, %s).tag == SP_T_NIL) sp_RbHash_set(%s, %s, %s);\n",
+                     recv, key, recv, key, val);
+            }
+            free(recv); free(key); free(val);
+        }
+        break;
+    }
+
     case PM_WHILE_NODE: {
         pm_while_node_t *n = (pm_while_node_t *)node;
         char *cond = codegen_expr(ctx, n->predicate);

@@ -77,7 +77,7 @@ typedef struct {
 
 /* Class info */
 #define MAX_IVARS 32
-#define MAX_METHODS 64
+#define MAX_METHODS 96
 #define MAX_INCLUDES 16
 typedef struct {
     char name[64];
