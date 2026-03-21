@@ -512,6 +512,8 @@ void emit_top_func(codegen_ctx_t *ctx, func_info_t *f) {
     /* Check if this function needs GC rooting */
     bool func_has_gc_vars = false;
     if (ctx->needs_gc) {
+        /* Check return type */
+        if (is_gc_type(ctx, f->return_type)) func_has_gc_vars = true;
         for (int i = 0; i < f->param_count && !func_has_gc_vars; i++)
             if (is_gc_type(ctx, f->params[i].type)) func_has_gc_vars = true;
         for (int i = saved_var_count + f->param_count; i < ctx->var_count && !func_has_gc_vars; i++)
@@ -586,11 +588,15 @@ void emit_top_func(codegen_ctx_t *ctx, func_info_t *f) {
                 }
             }
             const char *init = "";
+            bool needs_root = false;
             if (v->type.kind == SPINEL_TYPE_INTEGER) init = " = 0";
             else if (v->type.kind == SPINEL_TYPE_FLOAT) init = " = 0.0";
             else if (v->type.kind == SPINEL_TYPE_BOOLEAN) init = " = FALSE";
             else if (v->type.kind == SPINEL_TYPE_STRING) init = " = NULL";
+            else if (strstr(ct, "*")) { init = " = NULL"; needs_root = true; }
             emit(ctx, "%s %s%s;\n", ct, cn, init);
+            if (needs_root && func_has_gc_vars)
+                emit(ctx, "SP_GC_ROOT(%s);\n", cn);
             free(ct); free(cn);
         }
         /* Also declare any outer-scope variables that are used in this function
