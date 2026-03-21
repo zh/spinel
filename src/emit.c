@@ -1815,6 +1815,21 @@ void emit_header(codegen_ctx_t *ctx) {
     emit_raw(ctx, "    }\n");
     emit_raw(ctx, "    return r;\n}\n\n");
 
+    /* ---- IntArray insert ---- */
+    emit_raw(ctx, "static void sp_IntArray_insert(sp_IntArray *a, mrb_int idx, mrb_int val) {\n");
+    emit_raw(ctx, "    if (idx < 0) idx += a->len;\n");
+    emit_raw(ctx, "    if (idx < 0) idx = 0;\n");
+    emit_raw(ctx, "    if (idx > a->len) idx = a->len;\n");
+    emit_raw(ctx, "    if (a->start + a->len >= a->cap) {\n");
+    emit_raw(ctx, "        a->cap = (a->cap < 16) ? 16 : a->cap * 2;\n");
+    emit_raw(ctx, "        a->data = (mrb_int *)realloc(a->data, sizeof(mrb_int) * a->cap);\n");
+    emit_raw(ctx, "    }\n");
+    emit_raw(ctx, "    memmove(a->data + a->start + idx + 1, a->data + a->start + idx,\n");
+    emit_raw(ctx, "            sizeof(mrb_int) * (a->len - idx));\n");
+    emit_raw(ctx, "    a->data[a->start + idx] = val;\n");
+    emit_raw(ctx, "    a->len++;\n");
+    emit_raw(ctx, "}\n\n");
+
     /* Built-in sp_StrArray for string split support (only when needed) */
     if (ctx->needs_str_split && !ctx->lambda_mode) {
         emit_raw(ctx, "/* ---- Built-in string array ---- */\n");

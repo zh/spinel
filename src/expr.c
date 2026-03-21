@@ -716,8 +716,13 @@ char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
             if (strcmp(method, "&") == 0)  c_op = "&";
             if (strcmp(method, "^") == 0)  c_op = "^";
 
-            if (c_op && (vt_is_numeric(lt) || lt.kind == SPINEL_TYPE_BOOLEAN) &&
-                        (vt_is_numeric(rt) || rt.kind == SPINEL_TYPE_BOOLEAN)) {
+            /* Allow VALUE on one side when the other is numeric (cast to mrb_int) */
+            bool lt_ok = vt_is_numeric(lt) || lt.kind == SPINEL_TYPE_BOOLEAN;
+            bool rt_ok = vt_is_numeric(rt) || rt.kind == SPINEL_TYPE_BOOLEAN;
+            if (!lt_ok && lt.kind == SPINEL_TYPE_VALUE && rt_ok) lt_ok = true;
+            if (!rt_ok && rt.kind == SPINEL_TYPE_VALUE && lt_ok) rt_ok = true;
+
+            if (c_op && lt_ok && rt_ok) {
                 char *left = codegen_expr(ctx, call->receiver);
                 char *right = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
                 vtype_t rest = binop_result(lt, rt, method);
@@ -1371,6 +1376,13 @@ char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                     r = sfmt("sp_IntArray_push(%s, %s)", recv, arg);
                     free(arg);
                 }
+                else if (strcmp(method, "insert") == 0 && call->arguments &&
+                         call->arguments->arguments.size == 2) {
+                    char *idx = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                    char *val = codegen_expr(ctx, call->arguments->arguments.nodes[1]);
+                    r = sfmt("(sp_IntArray_insert(%s, %s, %s), %s)", recv, idx, val, recv);
+                    free(idx); free(val);
+                }
                 else if (strcmp(method, "[]") == 0 && call->arguments &&
                          call->arguments->arguments.size == 1) {
                     char *idx = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
@@ -1542,6 +1554,42 @@ char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
                     emit(ctx, "}\n");
                     free(recv); free(bpname); free(method);
                     return sfmt("_map_%d", tmp);
+                }
+
+                /* Array#map! with block → in-place map (expression context) */
+                if (strcmp(method, "map!") == 0 && call->block &&
+                    PM_NODE_TYPE(call->block) == PM_BLOCK_NODE) {
+                    pm_block_node_t *blk = (pm_block_node_t *)call->block;
+                    char *bpname = extract_block_param(ctx, blk);
+                    int tmp = ctx->temp_counter++;
+                    emit(ctx, "for (mrb_int _mi_%d = 0; _mi_%d < sp_IntArray_length(%s); _mi_%d++) {\n",
+                         tmp, tmp, recv, tmp);
+                    ctx->indent++;
+                    if (bpname) {
+                        char *cn = make_cname(bpname, false);
+                        emit(ctx, "mrb_int %s = sp_IntArray_get(%s, _mi_%d);\n", cn, recv, tmp);
+                        free(cn);
+                    }
+                    char *body_expr = NULL;
+                    if (blk->body) {
+                        pm_node_t *body = (pm_node_t *)blk->body;
+                        if (PM_NODE_TYPE(body) == PM_STATEMENTS_NODE) {
+                            pm_statements_node_t *stmts = (pm_statements_node_t *)body;
+                            if (stmts->body.size > 0)
+                                body_expr = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                        } else {
+                            body_expr = codegen_expr(ctx, body);
+                        }
+                    }
+                    if (body_expr) {
+                        emit(ctx, "sp_IntArray_set(%s, _mi_%d, %s);\n", recv, tmp, body_expr);
+                        free(body_expr);
+                    }
+                    ctx->indent--;
+                    emit(ctx, "}\n");
+                    char *r = xstrdup(recv);
+                    free(recv); free(bpname); free(method);
+                    return r;
                 }
 
                 /* Array#select with block → new IntArray (expression context) */
@@ -3676,6 +3724,44 @@ char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
         return r;
     }
 
+    case PM_UNLESS_NODE: {
+        pm_unless_node_t *n = (pm_unless_node_t *)node;
+        vtype_t rt = infer_type(ctx, node);
+        char *ct = vt_ctype(ctx, rt, false);
+        int tmp = ctx->temp_counter++;
+        char *cond = codegen_expr(ctx, n->predicate);
+        emit(ctx, "%s _unl_%d;\n", ct, tmp);
+        emit(ctx, "if (!(%s)) {\n", cond);
+        free(cond);
+        ctx->indent++;
+        if (n->statements) {
+            pm_statements_node_t *stmts = (pm_statements_node_t *)n->statements;
+            if (stmts->body.size > 0) {
+                char *val = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                emit(ctx, "_unl_%d = %s;\n", tmp, val);
+                free(val);
+            }
+        }
+        ctx->indent--;
+        if (n->else_clause) {
+            emit(ctx, "} else {\n");
+            ctx->indent++;
+            pm_else_node_t *el = (pm_else_node_t *)n->else_clause;
+            if (el->statements) {
+                pm_statements_node_t *stmts = (pm_statements_node_t *)el->statements;
+                if (stmts->body.size > 0) {
+                    char *val = codegen_expr(ctx, stmts->body.nodes[stmts->body.size - 1]);
+                    emit(ctx, "_unl_%d = %s;\n", tmp, val);
+                    free(val);
+                }
+            }
+            ctx->indent--;
+        }
+        emit(ctx, "}\n");
+        free(ct);
+        return sfmt("_unl_%d", tmp);
+    }
+
     case PM_PARENTHESES_NODE: {
         pm_parentheses_node_t *n = (pm_parentheses_node_t *)node;
         if (n->body) {
@@ -4136,6 +4222,9 @@ char *codegen_expr(codegen_ctx_t *ctx, pm_node_t *node) {
         free(ct);
         return sfmt("_resc_%d", tmp);
     }
+
+    case PM_KEYWORD_HASH_NODE:
+        return xstrdup("0 /* kwargs */");
 
     default:
         fprintf(stderr, "spinel: warning: unsupported expression node type %d\n", PM_NODE_TYPE(node));

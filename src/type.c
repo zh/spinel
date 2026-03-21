@@ -422,8 +422,10 @@ vtype_t infer_type(codegen_ctx_t *ctx, pm_node_t *node) {
                     strcmp(method, "length") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
                 if (strcmp(method, "[]") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
                 if (strcmp(method, "!=") == 0 || strcmp(method, "==") == 0) { free(method); return vt_prim(SPINEL_TYPE_BOOLEAN); }
-                if (strcmp(method, "map") == 0 || strcmp(method, "select") == 0 ||
+                if (strcmp(method, "map") == 0 || strcmp(method, "map!") == 0 ||
+                    strcmp(method, "select") == 0 ||
                     strcmp(method, "reject") == 0) { free(method); return vt_prim(SPINEL_TYPE_ARRAY); }
+                if (strcmp(method, "insert") == 0) { free(method); return vt_prim(SPINEL_TYPE_ARRAY); }
                 if (strcmp(method, "first") == 0 || strcmp(method, "last") == 0) { free(method); return vt_prim(SPINEL_TYPE_INTEGER); }
                 if (strcmp(method, "reduce") == 0 || strcmp(method, "inject") == 0 ||
                     strcmp(method, "min") == 0 || strcmp(method, "max") == 0 ||

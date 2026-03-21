@@ -535,6 +535,19 @@ void codegen_stmt(codegen_ctx_t *ctx, pm_node_t *node) {
             break;
         }
 
+        /* Kernel#warn → fprintf(stderr, ...) */
+        if (!call->receiver && strcmp(method, "warn") == 0) {
+            if (call->arguments && call->arguments->arguments.size > 0) {
+                char *msg = codegen_expr(ctx, call->arguments->arguments.nodes[0]);
+                emit(ctx, "fprintf(stderr, \"%%s\\n\", %s);\n", msg);
+                free(msg);
+            } else {
+                emit(ctx, "fputc('\\n', stderr);\n");
+            }
+            free(method);
+            break;
+        }
+
         /* puts: output + newline */
         if (!call->receiver && strcmp(method, "puts") == 0) {
             /* In lambda mode: puts on a StrArray variable → iterate and print each */
