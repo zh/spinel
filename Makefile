@@ -10,10 +10,10 @@
 PRISM_VERSION ?= 1.4.0
 CC            ?= cc
 CFLAGS        = -Wall -Wextra -O2 -std=c99
-CFLAGS       += -Ilib/prism/include -Isrc
+CFLAGS       += -Ivendor/prism/include -Isrc
 
 # Prism library
-PRISM_DIR     = lib/prism
+PRISM_DIR     = vendor/prism
 PRISM_LIB     = $(PRISM_DIR)/build/libprism.a
 PRISM_CFLAGS  = -I$(PRISM_DIR)/include
 
@@ -129,6 +129,6 @@ clean:
 	rm -f mandelbrot_aot.pbm mandelbrot_ruby.pbm
 
 distclean: clean
-	rm -rf lib/prism
+	rm -rf vendor/prism
 
 .PHONY: all deps test test-all gen clean distclean

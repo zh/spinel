@@ -15,7 +15,7 @@
 /mandelbrot_dbg
 
 # Dependencies (fetched by `make deps`)
-/lib/prism/
+/vendor/prism/
 
 # Claude Code local settings
 .claude/
