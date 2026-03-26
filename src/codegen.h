@@ -384,10 +384,22 @@ ivar_info_t *find_ivar(class_info_t *cls, const char *name);
 module_info_t *find_module(codegen_ctx_t *ctx, const char *name);
 func_info_t *find_func(codegen_ctx_t *ctx, const char *name);
 
+/* --- Built-in method table (methods.c) --- */
+typedef struct {
+  const char *name;
+  spinel_type_t return_type;
+  int min_argc;           /* minimum required args (-1 = don't care) */
+  int max_argc;           /* maximum args (-1 = variadic) */
+  bool needs_block;       /* true if method requires a block */
+} builtin_method_def_t;
+
+const builtin_method_def_t *builtin_find_method(spinel_type_t kind, const char *name);
+bool builtin_has_method(spinel_type_t kind, const char *name);
+spinel_type_t builtin_return_type(spinel_type_t recv_kind, const char *name);
+
 /* --- Extension method lookup (codegen.c) --- */
 method_info_t *find_ext_method(codegen_ctx_t *ctx, spinel_type_t recv_type, const char *name);
 spinel_type_t builtin_type_for_name(const char *name);
-bool builtin_has_method(spinel_type_t kind, const char *name);
 
 /* --- Variable management (codegen.c) --- */
 var_entry_t *var_lookup(codegen_ctx_t *ctx, const char *name);
