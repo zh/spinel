@@ -2076,29 +2076,21 @@ class Compiler
     stmts = get_body_stmts(root)
 
     # Pass 0: modules (must come before classes for include)
-    i = 0
-    while i < stmts.length
-      sid = stmts[i]
+    stmts.each { |sid|
       if @nd_type[sid] == "ModuleNode"
         collect_module(sid)
       end
-      i = i + 1
-    end
+    }
 
     # Pass 1: classes
-    i = 0
-    while i < stmts.length
-      sid = stmts[i]
+    stmts.each { |sid|
       if @nd_type[sid] == "ClassNode"
         collect_class(sid)
       end
-      i = i + 1
-    end
+    }
 
     # Pass 2: top-level methods, constants, define_method
-    i = 0
-    while i < stmts.length
-      sid = stmts[i]
+    stmts.each { |sid|
       if @nd_type[sid] == "DefNode"
         collect_toplevel_method(sid)
       end
@@ -2110,8 +2102,7 @@ class Compiler
           collect_define_method(sid)
         end
       end
-      i = i + 1
-    end
+    }
 
     # Pass 2.5: infer lambda parameter types from call sites
     infer_lambda_param_types
@@ -2148,9 +2139,7 @@ class Compiler
       body = @nd_body[nid]
       if body >= 0
         body_stmts = get_stmts(body)
-        j = 0
-        while j < body_stmts.length
-          sid = body_stmts[j]
+        body_stmts.each { |sid|
           if @nd_type[sid] == "DefNode"
             # Add as top-level method with prefix
             mname = @nd_name[sid]
@@ -2165,8 +2154,7 @@ class Compiler
             @meth_has_yield.push(0)
             @meth_has_defaults.push("0")
           end
-          j = j + 1
-        end
+        }
       end
       return
     end
@@ -2282,9 +2270,7 @@ class Compiler
     end
     body_stmts = get_stmts(body)
     # First pass: collect all class methods and attrs
-    j = 0
-    while j < body_stmts.length
-      sid = body_stmts[j]
+    body_stmts.each { |sid|
       if @nd_type[sid] == "DefNode"
         collect_class_method(ci, sid)
       end
@@ -2296,12 +2282,9 @@ class Compiler
           end
         end
       end
-      j = j + 1
-    end
+    }
     # Second pass: handle includes (after all own methods are known)
-    j = 0
-    while j < body_stmts.length
-      sid = body_stmts[j]
+    body_stmts.each { |sid|
       if @nd_type[sid] == "CallNode"
         if @nd_name[sid] == "include"
           inc_args = @nd_arguments[sid]
@@ -2318,8 +2301,7 @@ class Compiler
           end
         end
       end
-      j = j + 1
-    end
+    }
 
     # Collect ivars
     collect_ivars(ci)
@@ -3027,9 +3009,7 @@ class Compiler
       return
     end
     body_stmts = get_stmts(body)
-    j = 0
-    while j < body_stmts.length
-      sid = body_stmts[j]
+    body_stmts.each { |sid|
       if @nd_type[sid] == "ConstantWriteNode"
         cname = mname + "_" + @nd_name[sid]
         expr_id = @nd_expression[sid]
@@ -3071,8 +3051,7 @@ class Compiler
         @const_types.push(ct)
         @const_expr_ids.push(expr_id)
       end
-      j = j + 1
-    end
+    }
   end
 
   def collect_constant(nid)
@@ -3576,9 +3555,7 @@ class Compiler
         end
         if bid >= 0
           stmts = get_stmts(bid)
-          k = 0
-          while k < stmts.length
-            sid = stmts[k]
+          stmts.each { |sid|
             if @nd_type[sid] == "InstanceVariableWriteNode"
               expr = @nd_expression[sid]
               if expr >= 0
@@ -3615,8 +3592,7 @@ class Compiler
                 end
               end
             end
-            k = k + 1
-          end
+          }
         end
         mi = mi + 1
       end
@@ -3850,9 +3826,7 @@ class Compiler
     lnames = "".split(",")
     ltypes = "".split(",")
     empty_p = "".split(",")
-    i = 0
-    while i < stmts.length
-      sid = stmts[i]
+    stmts.each { |sid|
       if @nd_type[sid] != "DefNode"
         if @nd_type[sid] != "ClassNode"
           if @nd_type[sid] != "ConstantWriteNode"
@@ -3862,8 +3836,7 @@ class Compiler
           end
         end
       end
-      i = i + 1
-    end
+    }
     k = 0
     while k < lnames.length
       declare_var(lnames[k], ltypes[k])
@@ -4562,9 +4535,7 @@ class Compiler
         end
         if bid >= 0
           stmts = get_stmts(bid)
-          k = 0
-          while k < stmts.length
-            sid = stmts[k]
+          stmts.each { |sid|
             if @nd_type[sid] == "InstanceVariableWriteNode"
               expr = @nd_expression[sid]
               if expr >= 0
@@ -4606,8 +4577,7 @@ class Compiler
                 end
               end
             end
-            k = k + 1
-          end
+          }
         end
       end
       j = j + 1
@@ -4746,9 +4716,7 @@ class Compiler
       args_id = @nd_arguments[nid]
       if args_id >= 0
         aargs = get_args(args_id)
-        k = 0
-        while k < aargs.length
-          aid = aargs[k]
+        aargs.each { |aid|
           if @nd_type[aid] == "CallNode"
             if @nd_name[aid] == mname
               if @nd_receiver[aid] < 0
@@ -4760,8 +4728,7 @@ class Compiler
               end
             end
           end
-          k = k + 1
-        end
+        }
       end
     end
     # Check if method is called in a negation context (boolean)
@@ -4878,9 +4845,7 @@ class Compiler
     lnames = "".split(",")
     ltypes = "".split(",")
     empty_p = "".split(",")
-    i = 0
-    while i < stmts.length
-      sid = stmts[i]
+    stmts.each { |sid|
       if @nd_type[sid] != "DefNode"
         if @nd_type[sid] != "ClassNode"
           if @nd_type[sid] != "ConstantWriteNode"
@@ -4890,8 +4855,7 @@ class Compiler
           end
         end
       end
-      i = i + 1
-    end
+    }
     k = 0
     while k < lnames.length
       declare_var(lnames[k], ltypes[k])
@@ -5264,9 +5228,7 @@ class Compiler
     lnames = "".split(",")
     ltypes = "".split(",")
     empty_p = "".split(",")
-    i = 0
-    while i < stmts.length
-      sid = stmts[i]
+    stmts.each { |sid|
       if @nd_type[sid] != "DefNode"
         if @nd_type[sid] != "ClassNode"
           if @nd_type[sid] != "ConstantWriteNode"
@@ -5274,8 +5236,7 @@ class Compiler
           end
         end
       end
-      i = i + 1
-    end
+    }
     k = 0
     while k < lnames.length
       declare_var(lnames[k], ltypes[k])
@@ -5399,16 +5360,13 @@ class Compiler
     stmts = get_body_stmts(@root_id)
     local_types = "".split(",")
     local_names = "".split(",")
-    i = 0
-    while i < stmts.length
-      sid = stmts[i]
+    stmts.each { |sid|
       if @nd_type[sid] != "DefNode"
         if @nd_type[sid] != "ClassNode"
           scan_poly_assigns(sid, local_names, local_types)
         end
       end
-      i = i + 1
-    end
+    }
   end
 
   def scan_poly_assigns(nid, names, types)
@@ -5519,9 +5477,7 @@ class Compiler
     end
     if @nd_type[nid] == "MultiWriteNode"
       targets = parse_id_list(@nd_targets[nid])
-      k = 0
-      while k < targets.length
-        tid = targets[k]
+      targets.each { |tid|
         if @nd_type[tid] == "LocalVariableTargetNode"
           lname = @nd_name[tid]
           if not_in(lname, names) == 1
@@ -5531,8 +5487,7 @@ class Compiler
             end
           end
         end
-        k = k + 1
-      end
+      }
     end
     # Recurse
     if @nd_body[nid] >= 0
@@ -6768,9 +6723,7 @@ class Compiler
           k = k + 1
         end
         stmts = get_stmts(bid)
-        k = 0
-        while k < stmts.length
-          sid = stmts[k]
+        stmts.each { |sid|
           if @nd_type[sid] == "SuperNode"
             if @cls_parents[ci] != ""
               pi = find_class_idx(@cls_parents[ci])
@@ -6802,8 +6755,7 @@ class Compiler
               compile_stmt(sid)
             end
           end
-          k = k + 1
-        end
+        }
         pop_scope
         @current_class_idx = -1
       end
@@ -6872,16 +6824,13 @@ class Compiler
           k = k + 1
         end
         stmts = get_stmts(bid)
-        k = 0
-        while k < stmts.length
-          sid = stmts[k]
+        stmts.each { |sid|
           if @nd_type[sid] == "InstanceVariableWriteNode"
             ivar = sanitize_ivar(@nd_name[sid])
             val = compile_expr(@nd_expression[sid])
             emit_raw("  self->" + ivar + " = " + val + ";")
           end
-          k = k + 1
-        end
+        }
         pop_scope
         @current_class_idx = -1
       end
@@ -7179,9 +7128,7 @@ class Compiler
     end
     if @nd_type[nid] == "MultiWriteNode"
       targets = parse_id_list(@nd_targets[nid])
-      k = 0
-      while k < targets.length
-        tid = targets[k]
+      targets.each { |tid|
         if @nd_type[tid] == "LocalVariableTargetNode"
           lname = @nd_name[tid]
           if not_in(lname, names) == 1
@@ -7191,8 +7138,7 @@ class Compiler
             end
           end
         end
-        k = k + 1
-      end
+      }
       if @nd_expression[nid] >= 0
         scan_locals(@nd_expression[nid], names, types, params)
       end
