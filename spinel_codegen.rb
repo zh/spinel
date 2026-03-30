@@ -175,18 +175,6 @@ class Compiler
     92.chr
   end
 
-  def join_sep(arr, sep)
-    result = ""
-    i = 0
-    while i < arr.length
-      if i > 0
-        result = result + sep
-      end
-      result = result + arr[i]
-      i = i + 1
-    end
-    result
-  end
 
   # Parse comma-sep node IDs into IntArray
   def parse_id_list(s)
@@ -2679,11 +2667,11 @@ class Compiler
         if k < types.length
           if types[k] == "int"
             types[k] = new_type
-            @cls_ivar_types[ci] = join_sep(types, ";")
+            @cls_ivar_types[ci] = types.join(";")
           end
           if types[k] == "nil"
             types[k] = new_type
-            @cls_ivar_types[ci] = join_sep(types, ";")
+            @cls_ivar_types[ci] = types.join(";")
           end
         end
         return
@@ -3131,7 +3119,7 @@ class Compiler
     end
 
     # Generate initialize method with params matching fields
-    init_params = join_sep(field_names, ",")
+    init_params = field_names.join(",")
     init_ptypes = ""
     k = 0
     while k < field_names.length
@@ -3152,7 +3140,7 @@ class Compiler
     bodies = @cls_meth_bodies[ci].split(";")
     if bodies.length > 0
       bodies[0] = "-2"
-      @cls_meth_bodies[ci] = join_sep(bodies, ";")
+      @cls_meth_bodies[ci] = bodies.join(";")
     end
   end
 
@@ -3321,7 +3309,7 @@ class Compiler
               end
               ak = ak + 1
             end
-            @meth_param_types[mi] = join_sep(ptypes, ",")
+            @meth_param_types[mi] = ptypes.join(",")
           end
         end
       end
@@ -3391,8 +3379,8 @@ class Compiler
                         end
                         k = k + 1
                       end
-                      all_ptypes[init_idx] = join_sep(ptypes, ",")
-                      @cls_meth_ptypes[init_ci] = join_sep(all_ptypes, "|")
+                      all_ptypes[init_idx] = ptypes.join(",")
+                      @cls_meth_ptypes[init_ci] = all_ptypes.join("|")
                     end
                   end
                 end
@@ -3428,8 +3416,8 @@ class Compiler
                     end
                     kk = kk + 1
                   end
-                  all_ptypes[midx] = join_sep(ptypes, ",")
-                  @cls_meth_ptypes[ci] = join_sep(all_ptypes, "|")
+                  all_ptypes[midx] = ptypes.join(",")
+                  @cls_meth_ptypes[ci] = all_ptypes.join("|")
                 end
               end
             end
@@ -3584,7 +3572,7 @@ class Compiler
                           end
                           ij = ij + 1
                         end
-                        @cls_ivar_types[i] = join_sep(ivar_types, ";")
+                        @cls_ivar_types[i] = ivar_types.join(";")
                       end
                     end
                     pi = pi + 1
@@ -3670,8 +3658,8 @@ class Compiler
                       end
                       if found_class == 1
                         ptypes[pk] = "obj_" + @cls_names[ci2]
-                        all_ptypes[j] = join_sep(ptypes, ",")
-                        @cls_meth_ptypes[oci] = join_sep(all_ptypes, "|")
+                        all_ptypes[j] = ptypes.join(",")
+                        @cls_meth_ptypes[oci] = all_ptypes.join("|")
                         changed = 1
                       end
                     end
@@ -3734,7 +3722,7 @@ class Compiler
                   end
                   if found_class == 1
                     ptypes[pk] = "obj_" + @cls_names[ci2]
-                    @meth_param_types[mi] = join_sep(ptypes, ",")
+                    @meth_param_types[mi] = ptypes.join(",")
                   end
                 end
                 ci2 = ci2 + 1
@@ -4043,7 +4031,7 @@ class Compiler
         j = j + 1
       end
       if changed == 1
-        @cls_meth_ptypes[ci] = join_sep(all_ptypes, "|")
+        @cls_meth_ptypes[ci] = all_ptypes.join("|")
       end
       ci = ci + 1
     end
@@ -4436,11 +4424,11 @@ class Compiler
             k = k + 1
           end
           # Update ptypes in class storage
-          new_ptypes = join_sep(ptypes, ",")
+          new_ptypes = ptypes.join(",")
           if j < all_ptypes.length
             all_ptypes[j] = new_ptypes
           end
-          @cls_meth_ptypes[i] = join_sep(all_ptypes, "|")
+          @cls_meth_ptypes[i] = all_ptypes.join("|")
         else
           k = 0
           while k < pnames.length
@@ -4493,7 +4481,7 @@ class Compiler
           returns[j] = rt
         end
         # Save incrementally so later methods can see updated return types
-        @cls_meth_returns[i] = join_sep(returns, ";")
+        @cls_meth_returns[i] = returns.join(";")
         pop_scope
         j = j + 1
       end
@@ -4516,7 +4504,7 @@ class Compiler
         pop_scope
         j = j + 1
       end
-      @cls_cmeth_returns[i] = join_sep(cm_returns, ";")
+      @cls_cmeth_returns[i] = cm_returns.join(";")
       @current_class_idx = -1
       i = i + 1
     end
@@ -5308,7 +5296,7 @@ class Compiler
               end
               k = k + 1
             end
-            @meth_param_types[mi] = join_sep(ptypes, ",")
+            @meth_param_types[mi] = ptypes.join(",")
           end
         end
       end
@@ -5644,8 +5632,8 @@ class Compiler
                 end
                 kk = kk + 1
               end
-              all_ptypes[midx] = join_sep(ptypes, ",")
-              @cls_meth_ptypes[ci] = join_sep(all_ptypes, "|")
+              all_ptypes[midx] = ptypes.join(",")
+              @cls_meth_ptypes[ci] = all_ptypes.join("|")
             end
           end
         end
