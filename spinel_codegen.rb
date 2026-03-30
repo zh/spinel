@@ -158,6 +158,11 @@ class Compiler
     @module_names = "".split(",")
     @module_body_ids = []
     @pending_method_ref = ""
+    @lambda_counter = 0
+    @lambda_funcs = ""
+    @lambda_params = "".split(",")
+    @lambda_captures = "".split(",")
+    @lambda_insert_pos = 0
   end
 
   def join_sep(arr, sep)
@@ -5340,6 +5345,7 @@ class Compiler
     # Emit lambda functions before main (they are generated during compilation)
     # We emit them in emit_main after forward declarations
     emit_main
+    0
   end
 
   def emit_header
