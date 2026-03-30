@@ -136,6 +136,13 @@ class Compiler
     @proc_counter = 0
     @proc_funcs = ""
 
+    # Lambda support
+    @needs_lambda = 0
+    @lambda_counter = 0
+    @lambda_funcs = ""
+    @lambda_params = "".split(",")
+    @lambda_captures = "".split(",")
+
     # Poly tracking: functions with params called with different types
     @poly_funcs = "".split(",")
     @poly_param_types = "".split(",")
@@ -918,6 +925,9 @@ class Compiler
         return st
       end
       return "int"
+    end
+    if t == "LambdaNode"
+      return "lambda"
     end
     "int"
   end
@@ -1893,6 +1903,9 @@ class Compiler
     end
     if t == "poly_array"
       return "sp_PolyArray *"
+    end
+    if t == "lambda"
+      return "sp_Val *"
     end
     if is_obj_type(t) == 1
       cname = t[4, t.length - 4]
@@ -4381,6 +4394,9 @@ class Compiler
       return
     end
     t = @nd_type[nid]
+    if t == "LambdaNode"
+      @needs_lambda = 1
+    end
     if t == "BeginNode"
       if @nd_rescue_clause[nid] >= 0
         @needs_setjmp = 1
@@ -5312,12 +5328,17 @@ class Compiler
     if @needs_stringio == 1
       emit_stringio_runtime
     end
+    if @needs_lambda == 1
+      emit_lambda_runtime
+    end
     emit_class_structs
     emit_gc_scan_functions
     emit_forward_decls
     emit_global_constants
     emit_class_methods
     emit_toplevel_methods
+    # Emit lambda functions before main (they are generated during compilation)
+    # We emit them in emit_main after forward declarations
     emit_main
   end
 
@@ -5576,6 +5597,24 @@ class Compiler
     emit_raw("typedef struct { sp_proc_fn_t fn; } sp_Proc;")
     emit_raw("static sp_Proc sp_proc_new(sp_proc_fn_t fn) { sp_Proc p; p.fn = fn; return p; }")
     emit_raw("static mrb_int sp_proc_call(sp_Proc p, mrb_int arg) { return p.fn ? p.fn(arg) : 0; }")
+    emit_raw("")
+  end
+
+  def emit_lambda_runtime
+    emit_raw("/* ---- Lambda/closure runtime (sp_Val) ---- */")
+    emit_raw("#include <sys/mman.h>")
+    emit_raw("typedef struct sp_Val sp_Val;")
+    emit_raw("typedef sp_Val *(*sp_fn_t)(sp_Val *self, sp_Val *arg);")
+    emit_raw("struct sp_Val { enum { SP_PROC2, SP_INT2, SP_BOOL2, SP_NIL2 } tag; union { struct { sp_fn_t fn; int ncaptures; } proc; mrb_int ival; mrb_bool bval; } u; sp_Val *captures[]; };")
+    emit_raw("#define SP_ARENA_SIZE ((size_t)16ULL * 1024 * 1024 * 1024)")
+    emit_raw("static char *sp_arena = NULL; static size_t sp_arena_pos = 0;")
+    emit_raw("static void *sp_lam_alloc(size_t sz) { sz = (sz + 7) & ~(size_t)7; if (!sp_arena) { sp_arena = (char *)mmap(NULL, SP_ARENA_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0); if (sp_arena == MAP_FAILED) { perror(\"mmap\"); exit(1); } sp_arena_pos = 0; } if (sp_arena_pos + sz > SP_ARENA_SIZE) { fprintf(stderr, \"arena exhausted\\n\"); exit(1); } void *p = sp_arena + sp_arena_pos; sp_arena_pos += sz; return p; }")
+    emit_raw("static sp_Val *sp_lam_proc(sp_fn_t fn, int ncap) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val) + sizeof(sp_Val *) * ncap); v->tag = SP_PROC2; v->u.proc.fn = fn; v->u.proc.ncaptures = ncap; return v; }")
+    emit_raw("static sp_Val *sp_lam_int(mrb_int n) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val)); v->tag = SP_INT2; v->u.ival = n; return v; }")
+    emit_raw("static sp_Val *sp_lam_bool(mrb_bool b) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val)); v->tag = SP_BOOL2; v->u.bval = b; return v; }")
+    emit_raw("static sp_Val sp_lam_nil_val = { .tag = SP_NIL2 };")
+    emit_raw("static sp_Val *sp_lam_call(sp_Val *f, sp_Val *arg) { return f->u.proc.fn(f, arg); }")
+    emit_raw("static mrb_int sp_lam_to_int(sp_Val *v) { return v->u.ival; }")
     emit_raw("")
   end
 
@@ -6900,6 +6939,8 @@ class Compiler
     emit_raw("typedef struct{const char**data;mrb_int len;}sp_Argv;")
     emit_raw("static sp_Argv sp_argv;")
     emit_raw("")
+    # Lambda functions will be inserted here after main compilation
+    @lambda_insert_pos = @out.length
     emit_raw("int main(int argc,char**argv){")
     if @needs_gc == 1
       emit_raw("  volatile char _sb; sp_gc_stack_bottom = (char*)&_sb;")
@@ -7015,6 +7056,11 @@ class Compiler
 
     pop_scope
     @in_main = 0
+
+    # Insert lambda functions before main
+    if @lambda_funcs != ""
+      @out = @out[0, @lambda_insert_pos] + @lambda_funcs + @out[@lambda_insert_pos, @out.length - @lambda_insert_pos]
+    end
   end
 
   # ---- Expression compiler ----
@@ -7157,6 +7203,9 @@ class Compiler
         return cpname
       end
       return @nd_name[nid]
+    end
+    if t == "LambdaNode"
+      return compile_lambda_expr(nid)
     end
     if t == "CallNode"
       return compile_call_expr(nid)
@@ -7775,6 +7824,34 @@ class Compiler
         end
       end
       return "0"
+    end
+
+    # Lambda calls: f[arg] or f.call(arg) where f is sp_Val*
+    if recv >= 0
+      rt = infer_type(recv)
+      if rt == "lambda"
+        rc = compile_expr(recv)
+        if mname == "[]"
+          args_id = @nd_arguments[nid]
+          if args_id >= 0
+            aargs = get_args(args_id)
+            if aargs.length > 0
+              return "sp_lam_call(" + rc + ", " + compile_expr(aargs[0]) + ")"
+            end
+          end
+          return "sp_lam_call(" + rc + ", &sp_lam_nil_val)"
+        end
+        if mname == "call"
+          args_id = @nd_arguments[nid]
+          if args_id >= 0
+            aargs = get_args(args_id)
+            if aargs.length > 0
+              return "sp_lam_call(" + rc + ", " + compile_expr(aargs[0]) + ")"
+            end
+          end
+          return "sp_lam_call(" + rc + ", &sp_lam_nil_val)"
+        end
+      end
     end
 
     # Check if operator is on an object with custom method
@@ -10884,6 +10961,369 @@ class Compiler
     end
     # Fallback: compile as normal statement
     compile_stmt(nid)
+  end
+
+  def scan_lambda_free_vars(nid, params, locals, free_vars)
+    # Scan AST node for free variable references
+    if nid < 0
+      return
+    end
+    t = @nd_type[nid]
+    if t == "LocalVariableReadNode"
+      vn = @nd_name[nid]
+      if not_in(vn, params) == 1
+        if not_in(vn, locals) == 1
+          if not_in(vn, free_vars) == 1
+            free_vars.push(vn)
+          end
+        end
+      end
+      return
+    end
+    if t == "LambdaNode"
+      # For nested lambdas, find their free vars and add them to OUR free vars
+      # (they need to be captured transitively)
+      inner_pname = ""
+      inner_params_id = @nd_parameters[nid]
+      if inner_params_id >= 0
+        reqs = parse_id_list(@nd_requireds[inner_params_id])
+        if reqs.length > 0
+          inner_pname = @nd_name[reqs[0]]
+        end
+      end
+      inner_params = "".split(",")
+      if inner_pname != ""
+        inner_params.push(inner_pname)
+      end
+      inner_body = @nd_body[nid]
+      if inner_body >= 0
+        inner_locals = "".split(",")
+        inner_free = "".split(",")
+        scan_lambda_free_vars(inner_body, inner_params, inner_locals, inner_free)
+        k = 0
+        while k < inner_free.length
+          vn = inner_free[k]
+          if not_in(vn, params) == 1
+            if not_in(vn, locals) == 1
+              if not_in(vn, free_vars) == 1
+                free_vars.push(vn)
+              end
+            end
+          end
+          k = k + 1
+        end
+      end
+      return
+    end
+    # Collect local writes as locals
+    if t == "LocalVariableWriteNode"
+      vn = @nd_name[nid]
+      if not_in(vn, locals) == 1
+        if not_in(vn, params) == 1
+          locals.push(vn)
+        end
+      end
+    end
+    # Recurse
+    if @nd_body[nid] >= 0
+      scan_lambda_free_vars(@nd_body[nid], params, locals, free_vars)
+    end
+    stmts = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < stmts.length
+      scan_lambda_free_vars(stmts[k], params, locals, free_vars)
+      k = k + 1
+    end
+    if @nd_expression[nid] >= 0
+      scan_lambda_free_vars(@nd_expression[nid], params, locals, free_vars)
+    end
+    if @nd_left[nid] >= 0
+      scan_lambda_free_vars(@nd_left[nid], params, locals, free_vars)
+    end
+    if @nd_right[nid] >= 0
+      scan_lambda_free_vars(@nd_right[nid], params, locals, free_vars)
+    end
+    if @nd_receiver[nid] >= 0
+      scan_lambda_free_vars(@nd_receiver[nid], params, locals, free_vars)
+    end
+    if @nd_arguments[nid] >= 0
+      scan_lambda_free_vars(@nd_arguments[nid], params, locals, free_vars)
+    end
+    args = parse_id_list(@nd_args[nid])
+    k = 0
+    while k < args.length
+      scan_lambda_free_vars(args[k], params, locals, free_vars)
+      k = k + 1
+    end
+    if @nd_predicate[nid] >= 0
+      scan_lambda_free_vars(@nd_predicate[nid], params, locals, free_vars)
+    end
+    if @nd_subsequent[nid] >= 0
+      scan_lambda_free_vars(@nd_subsequent[nid], params, locals, free_vars)
+    end
+    if @nd_else_clause[nid] >= 0
+      scan_lambda_free_vars(@nd_else_clause[nid], params, locals, free_vars)
+    end
+    if @nd_block[nid] >= 0
+      scan_lambda_free_vars(@nd_block[nid], params, locals, free_vars)
+    end
+    elems = parse_id_list(@nd_elements[nid])
+    k = 0
+    while k < elems.length
+      scan_lambda_free_vars(elems[k], params, locals, free_vars)
+      k = k + 1
+    end
+    if @nd_collection[nid] >= 0
+      scan_lambda_free_vars(@nd_collection[nid], params, locals, free_vars)
+    end
+  end
+
+  def compile_lambda_body_expr(nid, params, captures)
+    # Compile an expression inside a lambda body, replacing:
+    # - param refs with lv_param (local)
+    # - captured var refs with self->captures[i]
+    if nid < 0
+      return "&sp_lam_nil_val"
+    end
+    t = @nd_type[nid]
+    if t == "LocalVariableReadNode"
+      vn = @nd_name[nid]
+      # Check param
+      if not_in(vn, params) == 0
+        return "lv_" + vn
+      end
+      # Check captures
+      ci = 0
+      while ci < captures.length
+        if captures[ci] == vn
+          return "self->captures[" + ci.to_s + "]"
+        end
+        ci = ci + 1
+      end
+      return "lv_" + vn
+    end
+    if t == "LocalVariableWriteNode"
+      vn = @nd_name[nid]
+      val = compile_lambda_body_expr(@nd_expression[nid], params, captures)
+      # Check if capture
+      ci = 0
+      while ci < captures.length
+        if captures[ci] == vn
+          return "(self->captures[" + ci.to_s + "] = " + val + ")"
+        end
+        ci = ci + 1
+      end
+      emit("  sp_Val *lv_" + vn + " = " + val + ";")
+      return "lv_" + vn
+    end
+    if t == "IntegerNode"
+      return "sp_lam_int(" + @nd_value[nid].to_s + ")"
+    end
+    if t == "TrueNode"
+      return "sp_lam_bool(TRUE)"
+    end
+    if t == "FalseNode"
+      return "sp_lam_bool(FALSE)"
+    end
+    if t == "NilNode"
+      return "&sp_lam_nil_val"
+    end
+    if t == "StringNode"
+      return "sp_lam_int(0)"
+    end
+    if t == "LambdaNode"
+      return compile_lambda_expr(nid)
+    end
+    if t == "CallNode"
+      mname = @nd_name[nid]
+      recv = @nd_receiver[nid]
+      # f[arg] -> sp_lam_call(f, arg)
+      if mname == "[]"
+        if recv >= 0
+          rc = compile_lambda_body_expr(recv, params, captures)
+          args_id = @nd_arguments[nid]
+          if args_id >= 0
+            aargs = get_args(args_id)
+            if aargs.length > 0
+              ac = compile_lambda_body_expr(aargs[0], params, captures)
+              return "sp_lam_call(" + rc + ", " + ac + ")"
+            end
+          end
+          return "sp_lam_call(" + rc + ", &sp_lam_nil_val)"
+        end
+      end
+      # f.call(arg) -> sp_lam_call(f, arg)
+      if mname == "call"
+        if recv >= 0
+          rc = compile_lambda_body_expr(recv, params, captures)
+          args_id = @nd_arguments[nid]
+          if args_id >= 0
+            aargs = get_args(args_id)
+            if aargs.length > 0
+              ac = compile_lambda_body_expr(aargs[0], params, captures)
+              return "sp_lam_call(" + rc + ", " + ac + ")"
+            end
+          end
+          return "sp_lam_call(" + rc + ", &sp_lam_nil_val)"
+        end
+      end
+      # No receiver: bare function call
+      if recv < 0
+        if mname == "+"
+          return "sp_lam_int(0)"
+        end
+        mi = find_method_idx(mname)
+        if mi >= 0
+          ca = ""
+          args_id = @nd_arguments[nid]
+          if args_id >= 0
+            aargs = get_args(args_id)
+            k = 0
+            while k < aargs.length
+              if k > 0
+                ca = ca + ", "
+              end
+              ca = ca + compile_lambda_body_expr(aargs[k], params, captures)
+              k = k + 1
+            end
+          end
+          return "sp_" + sanitize_name(mname) + "(" + ca + ")"
+        end
+      end
+      # Arithmetic on sp_Val (+ operator)
+      if mname == "+"
+        if recv >= 0
+          rc = compile_lambda_body_expr(recv, params, captures)
+          ac = compile_lambda_body_expr(get_args(@nd_arguments[nid])[0], params, captures)
+          return "sp_lam_int(sp_lam_to_int(" + rc + ") + sp_lam_to_int(" + ac + "))"
+        end
+      end
+      return "&sp_lam_nil_val"
+    end
+    if t == "IfNode"
+      pred = compile_lambda_body_expr(@nd_predicate[nid], params, captures)
+      body = @nd_body[nid]
+      bexpr = "&sp_lam_nil_val"
+      if body >= 0
+        bs = get_stmts(body)
+        if bs.length > 0
+          bexpr = compile_lambda_body_expr(bs[bs.length - 1], params, captures)
+        end
+      end
+      ec = @nd_else_clause[nid]
+      eexpr = "&sp_lam_nil_val"
+      if ec >= 0
+        ebs = get_stmts(@nd_body[ec])
+        if ebs.length > 0
+          eexpr = compile_lambda_body_expr(ebs[ebs.length - 1], params, captures)
+        end
+      end
+      return "(" + pred + " ? " + bexpr + " : " + eexpr + ")"
+    end
+    "&sp_lam_nil_val"
+  end
+
+  def compile_lambda_expr(nid)
+    @needs_lambda = 1
+    # Get the parameter name
+    pname = ""
+    params_id = @nd_parameters[nid]
+    if params_id >= 0
+      reqs = parse_id_list(@nd_requireds[params_id])
+      if reqs.length > 0
+        pname = @nd_name[reqs[0]]
+      end
+    end
+    param_arr = "".split(",")
+    if pname != ""
+      param_arr.push(pname)
+    end
+
+    body = @nd_body[nid]
+    # Find free variables (captures)
+    free_vars = "".split(",")
+    locals = "".split(",")
+    if body >= 0
+      scan_lambda_free_vars(body, param_arr, locals, free_vars)
+    end
+
+    # Generate lambda function
+    lam_id = @lambda_counter
+    @lambda_counter = @lambda_counter + 1
+    fname = "_lam_" + lam_id.to_s
+
+    # Get body expression
+    bexpr = "&sp_lam_nil_val"
+    if body >= 0
+      bs = get_stmts(body)
+      if bs.length > 0
+        # Save current output and context, compile body into lambda function
+        save_out = @out
+        save_params = @lambda_params
+        save_captures = @lambda_captures
+        @out = ""
+        @lambda_params = param_arr
+        @lambda_captures = free_vars
+        bexpr = compile_lambda_body_expr(bs[bs.length - 1], param_arr, free_vars)
+        body_stmts = @out
+        @out = save_out
+        @lambda_params = save_params
+        @lambda_captures = save_captures
+
+        if body_stmts != ""
+          @lambda_funcs = @lambda_funcs + "static sp_Val *" + fname + "(sp_Val *self, sp_Val *arg) {\n"
+          if pname != ""
+            @lambda_funcs = @lambda_funcs + "  sp_Val *lv_" + pname + " = arg;\n"
+          end
+          @lambda_funcs = @lambda_funcs + "  (void)self;\n"
+          @lambda_funcs = @lambda_funcs + body_stmts + "\n"
+          @lambda_funcs = @lambda_funcs + "  return " + bexpr + ";\n"
+          @lambda_funcs = @lambda_funcs + "}\n\n"
+        else
+          @lambda_funcs = @lambda_funcs + "static sp_Val *" + fname + "(sp_Val *self, sp_Val *arg) {\n"
+          if pname != ""
+            @lambda_funcs = @lambda_funcs + "  sp_Val *lv_" + pname + " = arg;\n"
+          end
+          @lambda_funcs = @lambda_funcs + "  (void)self;\n"
+          @lambda_funcs = @lambda_funcs + "  return " + bexpr + ";\n"
+          @lambda_funcs = @lambda_funcs + "}\n\n"
+        end
+      else
+        @lambda_funcs = @lambda_funcs + "static sp_Val *" + fname + "(sp_Val *self, sp_Val *arg) { (void)self; (void)arg; return &sp_lam_nil_val; }\n\n"
+      end
+    else
+      @lambda_funcs = @lambda_funcs + "static sp_Val *" + fname + "(sp_Val *self, sp_Val *arg) { (void)self; (void)arg; return &sp_lam_nil_val; }\n\n"
+    end
+
+    # Build the closure creation expression
+    if free_vars.length > 0
+      tmp = new_temp
+      emit("  sp_Val *" + tmp + " = sp_lam_proc(" + fname + ", " + free_vars.length.to_s + ");")
+      k = 0
+      while k < free_vars.length
+        # Resolve the free variable reference in the enclosing context
+        fv = free_vars[k]
+        fv_ref = "lv_" + fv
+        # Check if it's a param of enclosing lambda
+        if not_in(fv, @lambda_params) == 0
+          fv_ref = "lv_" + fv
+        else
+          # Check if it's a capture of enclosing lambda
+          ci = 0
+          while ci < @lambda_captures.length
+            if @lambda_captures[ci] == fv
+              fv_ref = "self->captures[" + ci.to_s + "]"
+            end
+            ci = ci + 1
+          end
+        end
+        emit("  " + tmp + "->captures[" + k.to_s + "] = " + fv_ref + ";")
+        k = k + 1
+      end
+      return tmp
+    else
+      return "sp_lam_proc(" + fname + ", 0)"
+    end
   end
 
   def compile_proc_literal(nid)

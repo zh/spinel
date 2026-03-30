@@ -490,7 +490,19 @@ def serialize_node(node)
     }
 
   when Prism::LambdaNode
-    { "type" => "LambdaNode" }
+    h = { "type" => "LambdaNode" }
+    if node.parameters
+      bp = node.parameters
+      if bp.is_a?(Prism::BlockParametersNode) && bp.parameters
+        h["parameters"] = serialize_node(bp.parameters)
+      elsif bp.is_a?(Prism::NumberedParametersNode)
+        h["parameters"] = nil
+      else
+        h["parameters"] = serialize_node(bp)
+      end
+    end
+    h["body"] = serialize_node(node.body) if node.body
+    h
 
   when Prism::XStringNode
     {
