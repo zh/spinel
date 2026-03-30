@@ -2382,21 +2382,28 @@ class Compiler
     @cls_meth_has_yield.push("")
     @needs_gc = 1
 
-    # Get field names from symbol args
+    # Get field names from symbol args (skip keyword_init hash)
     args_id = @nd_arguments[call_nid]
     field_names = "".split(",")
     if args_id >= 0
       aids = get_args(args_id)
       k = 0
       while k < aids.length
+        # Skip KeywordHashNode (keyword_init: true)
+        if @nd_type[aids[k]] == "KeywordHashNode"
+          k = k + 1
+          next
+        end
         fname = @nd_content[aids[k]]
-        field_names.push(fname)
-        # Add ivar
-        iname = "@" + fname
-        add_ivar(ci, iname, "int")
-        # Add reader/writer
-        append_attr_reader(ci, fname)
-        append_attr_writer(ci, fname)
+        if fname != ""
+          field_names.push(fname)
+          # Add ivar
+          iname = "@" + fname
+          add_ivar(ci, iname, "int")
+          # Add reader/writer
+          append_attr_reader(ci, fname)
+          append_attr_writer(ci, fname)
+        end
         k = k + 1
       end
     end
@@ -2611,15 +2618,52 @@ class Compiler
                   if args_id >= 0
                     arg_ids = get_args(args_id)
                     all_ptypes = @cls_meth_ptypes[init_ci].split("|")
+                    all_params = @cls_meth_params[init_ci].split("|")
                     if init_idx < all_ptypes.length
                       ptypes = all_ptypes[init_idx].split(",")
+                      pnames = []
+                      if init_idx < all_params.length
+                        pnames = all_params[init_idx].split(",")
+                      end
                       k = 0
                       while k < arg_ids.length
-                        at = infer_type(arg_ids[k])
-                        if k < ptypes.length
-                          if ptypes[k] == "int"
-                            if at != "int"
-                              ptypes[k] = at
+                        if @nd_type[arg_ids[k]] == "KeywordHashNode"
+                          # Handle keyword args
+                          elems = parse_id_list(@nd_elements[arg_ids[k]])
+                          ek = 0
+                          while ek < elems.length
+                            if @nd_type[elems[ek]] == "AssocNode"
+                              key_id = @nd_key[elems[ek]]
+                              if key_id >= 0
+                                kname = ""
+                                if @nd_type[key_id] == "SymbolNode"
+                                  kname = @nd_content[key_id]
+                                end
+                                at = infer_type(@nd_expression[elems[ek]])
+                                pi = 0
+                                while pi < pnames.length
+                                  if pnames[pi] == kname
+                                    if pi < ptypes.length
+                                      if ptypes[pi] == "int"
+                                        if at != "int"
+                                          ptypes[pi] = at
+                                        end
+                                      end
+                                    end
+                                  end
+                                  pi = pi + 1
+                                end
+                              end
+                            end
+                            ek = ek + 1
+                          end
+                        else
+                          at = infer_type(arg_ids[k])
+                          if k < ptypes.length
+                            if ptypes[k] == "int"
+                              if at != "int"
+                                ptypes[k] = at
+                              end
                             end
                           end
                         end
@@ -2729,6 +2773,40 @@ class Compiler
   end
 
   def update_ivar_types_from_params
+    # Special case: synthetic struct constructors - ivars match params directly
+    i = 0
+    while i < @cls_names.length
+      init_idx2 = cls_find_method_direct(i, "initialize")
+      if init_idx2 >= 0
+        bodies = @cls_meth_bodies[i].split(";")
+        if init_idx2 < bodies.length
+          if bodies[init_idx2].to_i == -2
+            # Synthetic struct - update ivar types from init param types
+            all_params = @cls_meth_params[i].split("|")
+            all_ptypes = @cls_meth_ptypes[i].split("|")
+            pnames = []
+            ptypes = []
+            if init_idx2 < all_params.length
+              pnames = all_params[init_idx2].split(",")
+            end
+            if init_idx2 < all_ptypes.length
+              ptypes = all_ptypes[init_idx2].split(",")
+            end
+            pk = 0
+            while pk < pnames.length
+              iname = "@" + pnames[pk]
+              if pk < ptypes.length
+                if ptypes[pk] != "int"
+                  update_ivar_type(i, iname, ptypes[pk])
+                end
+              end
+              pk = pk + 1
+            end
+          end
+        end
+      end
+      i = i + 1
+    end
     # For each class method, if it assigns @ivar = param, update ivar type from param type
     i = 0
     while i < @cls_names.length
@@ -5992,7 +6070,7 @@ class Compiler
         end
         ci = find_class_idx(cname)
         if ci >= 0
-          return "sp_" + cname + "_new(" + compile_call_args(nid) + ")"
+          return "sp_" + cname + "_new(" + compile_constructor_args(ci, nid) + ")"
         end
       end
     end
@@ -6885,6 +6963,87 @@ class Compiler
         end
       end
       k = k + 1
+    end
+    result
+  end
+
+  def compile_constructor_args(ci, nid)
+    args_id = @nd_arguments[nid]
+    if args_id < 0
+      return ""
+    end
+    arg_ids = get_args(args_id)
+    # Check if any arg is a KeywordHashNode
+    has_kw = 0
+    ak = 0
+    while ak < arg_ids.length
+      if @nd_type[arg_ids[ak]] == "KeywordHashNode"
+        has_kw = 1
+      end
+      ak = ak + 1
+    end
+    if has_kw == 0
+      return compile_call_args(nid)
+    end
+    # Extract keyword pairs
+    kw_names = "".split(",")
+    kw_vals = "".split(",")
+    ak = 0
+    while ak < arg_ids.length
+      if @nd_type[arg_ids[ak]] == "KeywordHashNode"
+        elems = parse_id_list(@nd_elements[arg_ids[ak]])
+        ek = 0
+        while ek < elems.length
+          if @nd_type[elems[ek]] == "AssocNode"
+            key_id = @nd_key[elems[ek]]
+            if key_id >= 0
+              kname = ""
+              if @nd_type[key_id] == "SymbolNode"
+                kname = @nd_content[key_id]
+              end
+              kw_names.push(kname)
+              kw_vals.push(compile_expr(@nd_expression[elems[ek]]))
+            end
+          end
+          ek = ek + 1
+        end
+      end
+      ak = ak + 1
+    end
+    # Get init param names from class
+    init_ci = find_init_class(ci)
+    if init_ci < 0
+      return compile_call_args(nid)
+    end
+    init_idx = cls_find_method_direct(init_ci, "initialize")
+    if init_idx < 0
+      return compile_call_args(nid)
+    end
+    all_params = @cls_meth_params[init_ci].split("|")
+    pnames = []
+    if init_idx < all_params.length
+      pnames = all_params[init_idx].split(",")
+    end
+    # Build args in param order using keyword values
+    result = ""
+    pk = 0
+    while pk < pnames.length
+      if pk > 0
+        result = result + ", "
+      end
+      found = 0
+      ki = 0
+      while ki < kw_names.length
+        if kw_names[ki] == pnames[pk]
+          result = result + kw_vals[ki]
+          found = 1
+        end
+        ki = ki + 1
+      end
+      if found == 0
+        result = result + "0"
+      end
+      pk = pk + 1
     end
     result
   end
