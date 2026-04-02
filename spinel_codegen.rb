@@ -125,6 +125,7 @@ class Compiler
     @needs_system = 0
     @needs_int_array = 0
     @needs_float_array = 0
+    @needs_ptr_array = 0
     @needs_str_array = 0
     @needs_str_int_hash = 0
     @needs_str_str_hash = 0
@@ -147,11 +148,20 @@ class Compiler
     @lambda_funcs = ""
     @lambda_params = "".split(",")
     @lambda_captures = "".split(",")
+    @lambda_capture_cell_types = "".split(",")
+    @lambda_var_ret_names = "".split(",")
+    @lambda_var_ret_types = "".split(",")
+    @last_lambda_ret_type = ""
 
     # Fiber support
     @needs_fiber = 0
     @fiber_counter = 0
     @fiber_funcs = ""
+    @in_fiber_body = 0
+    @fiber_captures = "".split(",")
+    @fiber_capture_types = "".split(",")
+    @heap_promoted_names = "".split(",")
+    @heap_promoted_cells = "".split(",")
 
     # Poly tracking: functions with params called with different types
     @poly_funcs = "".split(",")
@@ -949,6 +959,15 @@ class Compiler
       return "int"
     end
     if t == "LambdaNode"
+      # Record return type if inside a variable assignment context
+      lbody = @nd_body[nid]
+      if lbody >= 0
+        lbs = get_stmts(lbody)
+        if lbs.length > 0
+          lrt = infer_type(lbs.last)
+          @last_lambda_ret_type = lrt
+        end
+      end
       return "lambda"
     end
     "int"
@@ -1049,6 +1068,22 @@ class Compiler
       return r
     end
 
+    # Lambda call return type
+    if mname == "call" || mname == "[]"
+      if recv >= 0
+        rt = infer_type(recv)
+        if rt == "lambda"
+          if @nd_type[recv] == "LocalVariableReadNode"
+            lrt = lambda_var_ret_type(@nd_name[recv])
+            if lrt != ""
+              return lrt
+            end
+          end
+          return "int"
+        end
+      end
+    end
+
     # Method name-based type inference
     r = infer_method_name_type(nid, mname, recv)
     if r != ""
@@ -1115,21 +1150,49 @@ class Compiler
         end
       end
     end
-    # fiber.resume returns int
+    # fiber.resume returns poly
     if mname == "resume"
       if recv >= 0
-        rt = infer_type(recv)
+        rt = base_type(infer_type(recv))
         if rt == "fiber"
-          return "int"
+          return "poly"
         end
       end
     end
-    # Fiber.yield returns int
+    # Fiber.yield returns poly
     if mname == "yield"
       if recv >= 0
         if @nd_type[recv] == "ConstantReadNode"
           if @nd_name[recv] == "Fiber"
-            return "int"
+            return "poly"
+          end
+        end
+      end
+    end
+    # fiber.alive? returns bool
+    if mname == "alive?"
+      if recv >= 0
+        rt = base_type(infer_type(recv))
+        if rt == "fiber"
+          return "bool"
+        end
+      end
+    end
+    # fiber.transfer returns poly
+    if mname == "transfer"
+      if recv >= 0
+        rt = base_type(infer_type(recv))
+        if rt == "fiber"
+          return "poly"
+        end
+      end
+    end
+    # Fiber.current returns fiber
+    if mname == "current"
+      if recv >= 0
+        if @nd_type[recv] == "ConstantReadNode"
+          if @nd_name[recv] == "Fiber"
+            return "fiber"
           end
         end
       end
@@ -1669,6 +1732,9 @@ class Compiler
         if rt == "str_array"
           return "string"
         end
+        if is_ptr_array_type(rt) == 1
+          return ptr_array_elem_type(rt)
+        end
         if rt == "str_int_hash"
           return "int"
         end
@@ -1916,7 +1982,8 @@ class Compiler
         end
       end
       if is_obj_type(rt) == 1
-        cname = rt[4, rt.length - 4]
+        bt_rt = base_type(rt)
+        cname = bt_rt[4, bt_rt.length - 4]
         ci = find_class_idx(cname)
         if ci >= 0
           # Check attr_reader
@@ -2041,6 +2108,24 @@ class Compiler
     0
   end
 
+  # Check if type is a ptr_array (e.g., "obj_Planet_ptr_array")
+  def is_ptr_array_type(t)
+    if t != nil && t.length > 10
+      if t.end_with?("_ptr_array")
+        return 1
+      end
+    end
+    0
+  end
+
+  # Get element class type from ptr_array type (e.g., "obj_Planet_ptr_array" → "obj_Planet")
+  def ptr_array_elem_type(t)
+    if is_ptr_array_type(t) == 1
+      return t[0, t.length - 10]
+    end
+    ""
+  end
+
   def type_is_pointer(t)
     if is_nullable_type(t) == 1
       t = base_type(t)
@@ -2049,6 +2134,9 @@ class Compiler
       return 1
     end
     if t == "float_array"
+      return 1
+    end
+    if is_ptr_array_type(t) == 1
       return 1
     end
     if t == "str_array"
@@ -2080,6 +2168,27 @@ class Compiler
     0
   end
 
+  # Check if evaluating an expression might trigger GC allocation
+  def expr_may_gc(nid)
+    if nid < 0
+      return 0
+    end
+    t = @nd_type[nid]
+    if t == "IntegerNode" || t == "FloatNode" || t == "StringNode"
+      return 0
+    end
+    if t == "SymbolNode" || t == "TrueNode" || t == "FalseNode" || t == "NilNode"
+      return 0
+    end
+    if t == "LocalVariableReadNode" || t == "SelfNode"
+      return 0
+    end
+    if t == "InstanceVariableReadNode" || t == "ConstantReadNode"
+      return 0
+    end
+    1
+  end
+
   def is_nullable_type(t)
     if t.length > 1 && t[t.length - 1] == "?"
       return 1
@@ -2107,6 +2216,9 @@ class Compiler
       return 1
     end
     if bt == "stringio" || bt == "lambda" || bt == "poly_array"
+      return 1
+    end
+    if bt == "fiber"
       return 1
     end
     if is_obj_type(bt) == 1
@@ -2160,6 +2272,9 @@ class Compiler
     end
     if t == "float_array"
       return "sp_FloatArray *"
+    end
+    if is_ptr_array_type(t) == 1
+      return "sp_PtrArray *"
     end
     if t == "str_array"
       return "sp_StrArray *"
@@ -2939,13 +3054,24 @@ class Compiler
     while k < names.length
       if names[k] == iname
         if k < types.length
-          if types[k] == "int"
+          old = types[k]
+          if old == "int" || old == "nil"
             types[k] = new_type
             @cls_ivar_types[ci] = types.join(";")
-          end
-          if types[k] == "nil"
-            types[k] = new_type
-            @cls_ivar_types[ci] = types.join(";")
+          elsif old != new_type && old != "poly"
+            # Nullable pattern: nil + T → T?, T + nil → T?
+            if new_type == "nil" && is_nullable_pointer_type(old) == 1
+              if old[old.length - 1] != "?"
+                types[k] = old + "?"
+                @cls_ivar_types[ci] = types.join(";")
+              end
+            elsif old == "nil" && is_nullable_pointer_type(new_type) == 1
+              types[k] = new_type + "?"
+              @cls_ivar_types[ci] = types.join(";")
+            else
+              types[k] = "poly"
+              @cls_ivar_types[ci] = types.join(";")
+            end
           end
         end
         return
@@ -3643,9 +3769,20 @@ class Compiler
                         else
                           at = infer_type(arg_ids[k])
                           if k < ptypes.length
-                            if ptypes[k] == "int"
+                            old_pt = ptypes[k]
+                            if old_pt == "int"
                               if at != "int"
                                 ptypes[k] = at
+                              end
+                            elsif old_pt == "nil" && at != "nil" && at != "int"
+                              if is_nullable_pointer_type(at) == 1
+                                ptypes[k] = at + "?"
+                              else
+                                ptypes[k] = at
+                              end
+                            elsif at == "nil" && old_pt != "nil" && is_nullable_pointer_type(old_pt) == 1
+                              if old_pt[old_pt.length - 1] != "?"
+                                ptypes[k] = old_pt + "?"
                               end
                             end
                           end
@@ -4187,6 +4324,16 @@ class Compiler
     if nid < 0
       return
     end
+    # Direct ivar write: @left = expr (inside class methods)
+    if @nd_type[nid] == "InstanceVariableWriteNode"
+      if @current_class_idx >= 0
+        iname = @nd_name[nid]
+        at = infer_type(@nd_expression[nid])
+        if at != "int" && at != "nil"
+          update_ivar_type(@current_class_idx, iname, at)
+        end
+      end
+    end
     if @nd_type[nid] == "CallNode"
       mname = @nd_name[nid]
       recv = @nd_receiver[nid]
@@ -4209,10 +4356,8 @@ class Compiler
                       arg_ids = get_args(args_id)
                       if arg_ids.length > 0
                         at = infer_type(arg_ids[0])
-                        if at != "int"
-                          if at != "nil"
-                            update_ivar_type(ci, iname, at)
-                          end
+                        if at != "int" && at != "nil"
+                          update_ivar_type(ci, iname, at)
                         end
                       end
                     end
@@ -5387,6 +5532,15 @@ class Compiler
           end
         end
       end
+      if mname == "current"
+        if @nd_receiver[nid] >= 0
+          if @nd_type[@nd_receiver[nid]] == "ConstantReadNode"
+            if @nd_name[@nd_receiver[nid]] == "Fiber"
+              @needs_fiber = 1
+            end
+          end
+        end
+      end
       if mname == "catch"
         @needs_setjmp = 1
       end
@@ -5600,9 +5754,19 @@ class Compiler
                         end
                         # otherwise arg is int variable, param already has a type - keep it
                       else
-                        # Genuinely different types - mark poly
-                        ptypes[k] = "poly"
-                        @needs_rb_value = 1
+                        # Check nullable compatibility: T and T? are compatible
+                        if base_type(ct) == base_type(at)
+                          # Same base type — use nullable version
+                          if is_nullable_type(at) == 1
+                            ptypes[k] = at
+                          elsif is_nullable_type(ct) == 0 && is_nullable_pointer_type(ct) == 1
+                            ptypes[k] = ct + "?"
+                          end
+                        else
+                          # Genuinely different types - mark poly
+                          ptypes[k] = "poly"
+                          @needs_rb_value = 1
+                        end
                       end
                     end
                   end
@@ -6059,6 +6223,13 @@ class Compiler
       end
       emit_float_array_runtime
     end
+    if @needs_ptr_array == 1
+      if @needs_gc == 0
+        @needs_gc = 1
+        emit_gc_runtime
+      end
+      emit_ptr_array_runtime
+    end
     if @needs_str_array == 1
       emit_str_array_runtime
     end
@@ -6140,6 +6311,26 @@ class Compiler
       if @needs_gc == 0
         @needs_gc = 1
         emit_gc_runtime
+      end
+      if @needs_setjmp == 0
+        @needs_setjmp = 1
+        emit_setjmp_runtime
+      end
+      if @needs_rb_value == 0
+        @needs_rb_value = 1
+        if @needs_string_helpers == 0
+          @needs_string_helpers = 1
+          if @needs_int_array == 0
+            @needs_int_array = 1
+            emit_int_array_runtime
+          end
+          if @needs_str_array == 0
+            @needs_str_array = 1
+            emit_str_array_runtime
+          end
+          emit_string_helpers
+        end
+        emit_rb_value_runtime
       end
       emit_fiber_runtime
     end
@@ -6245,6 +6436,19 @@ class Compiler
     emit_raw("static void sp_IntArray_unshift(sp_IntArray*a,mrb_int v){if(a->start>0){a->start--;a->data[a->start]=v;a->len++;}else{mrb_int e=a->len+1;if(e>a->cap){a->cap=a->cap*2+1;a->data=(mrb_int*)realloc(a->data,sizeof(mrb_int)*a->cap);}memmove(a->data+1,a->data,sizeof(mrb_int)*a->len);a->data[0]=v;a->len++;}}")
     emit_raw("static const char*sp_IntArray_join(sp_IntArray*a,const char*sep){size_t sl=strlen(sep),cap=256;char*buf=(char*)malloc(cap);size_t len=0;for(mrb_int i=0;i<a->len;i++){if(i>0){if(len+sl>=cap){cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,sep,sl);len+=sl;}char tmp[32];int n=snprintf(tmp,32,\"%lld\",(long long)a->data[a->start+i]);if(len+n>=cap){cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,tmp,n);len+=n;}buf[len]=0;return buf;}")
     emit_raw("static mrb_bool sp_IntArray_eq(sp_IntArray*a,sp_IntArray*b){if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(a->data[a->start+i]!=b->data[b->start+i])return FALSE;return TRUE;}")
+    emit_raw("")
+  end
+
+  def emit_ptr_array_runtime
+    emit_raw("/* ---- PtrArray: array of void* pointers ---- */")
+    emit_raw("typedef struct{void**data;mrb_int len;mrb_int cap;}sp_PtrArray;")
+    emit_raw("static void sp_PtrArray_fin(void*p){free(((sp_PtrArray*)p)->data);}")
+    emit_raw("static sp_PtrArray*sp_PtrArray_new(void){sp_PtrArray*a=(sp_PtrArray*)sp_gc_alloc(sizeof(sp_PtrArray),sp_PtrArray_fin,NULL);a->cap=16;a->data=(void**)malloc(sizeof(void*)*a->cap);a->len=0;return a;}")
+    emit_raw("static inline void sp_PtrArray_push(sp_PtrArray*a,void*v){if(a->len>=a->cap){a->cap=a->cap*2+1;a->data=(void**)realloc(a->data,sizeof(void*)*a->cap);}a->data[a->len++]=v;}")
+    emit_raw("static inline void*sp_PtrArray_get(sp_PtrArray*a,mrb_int i){if(i<0)i+=a->len;return a->data[i];}")
+    emit_raw("static inline void sp_PtrArray_set(sp_PtrArray*a,mrb_int i,void*v){if(i<0)i+=a->len;a->data[i]=v;}")
+    emit_raw("static inline mrb_int sp_PtrArray_length(sp_PtrArray*a){return a->len;}")
+    emit_raw("static inline mrb_bool sp_PtrArray_empty(sp_PtrArray*a){return a->len==0;}")
     emit_raw("")
   end
 
@@ -6593,13 +6797,17 @@ class Compiler
     emit_raw("#include <ucontext.h>")
     emit_raw("#include <sys/mman.h>")
     emit_raw("#define SP_FIBER_STACK_SIZE (64*1024)")
-    emit_raw("typedef struct sp_Fiber{ucontext_t ctx;ucontext_t caller_ctx;char*stack;int state;mrb_int yielded_value;mrb_int resumed_value;void(*body)(struct sp_Fiber*);int saved_exc_top;int saved_catch_top;}sp_Fiber;")
-    emit_raw("static sp_Fiber*sp_fiber_current=NULL;")
+    emit_raw("typedef struct sp_Fiber{ucontext_t ctx;ucontext_t caller_ctx;char*stack;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;}sp_Fiber;")
+    emit_raw("static sp_Fiber sp_fiber_root;")
+    emit_raw("static sp_Fiber*sp_fiber_current=&sp_fiber_root;")
     emit_raw("static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->stack)munmap(f->stack,SP_FIBER_STACK_SIZE);}")
-    emit_raw("static sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,NULL);f->stack=(char*)mmap(NULL,SP_FIBER_STACK_SIZE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);f->state=0;f->body=body;f->yielded_value=0;f->resumed_value=0;f->saved_exc_top=0;f->saved_catch_top=0;return f;}")
-    emit_raw("static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;f->body(f);f->state=3;f->yielded_value=f->yielded_value;swapcontext(&f->ctx,&f->caller_ctx);}")
-    emit_raw("static mrb_int sp_Fiber_resume(sp_Fiber*f,mrb_int val){if(f->state==3){fputs(\"dead fiber called\",stderr);exit(1);}f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_current=f;if(f->state==0){f->state=1;getcontext(&f->ctx);f->ctx.uc_stack.ss_sp=f->stack;f->ctx.uc_stack.ss_size=SP_FIBER_STACK_SIZE;f->ctx.uc_link=&f->caller_ctx;makecontext(&f->ctx,(void(*)(void))sp_fiber_trampoline,0);swapcontext(&f->caller_ctx,&f->ctx);}else{f->state=1;swapcontext(&f->caller_ctx,&f->ctx);}sp_fiber_current=prev;return f->yielded_value;}")
-    emit_raw("static mrb_int sp_Fiber_yield(mrb_int val){sp_Fiber*f=sp_fiber_current;f->yielded_value=val;f->state=2;swapcontext(&f->ctx,&f->caller_ctx);return f->resumed_value;}")
+    emit_raw("static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_mark(f->user_data);}")
+    emit_raw("static sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);f->stack=(char*)mmap(NULL,SP_FIBER_STACK_SIZE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;return f;}")
+    emit_raw("static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;f->body(f);f->state=3;if(f->transferred){sp_fiber_current=&sp_fiber_root;setcontext(&sp_fiber_root.ctx);}else{swapcontext(&f->ctx,&f->caller_ctx);}}")
+    emit_raw("static sp_RbVal sp_Fiber_resume(sp_Fiber*f,sp_RbVal val){if(f->state==3){sp_raise_cls(\"FiberError\",\"attempt to resume a terminated fiber\");}f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_current=f;if(f->state==0){f->state=1;getcontext(&f->ctx);f->ctx.uc_stack.ss_sp=f->stack;f->ctx.uc_stack.ss_size=SP_FIBER_STACK_SIZE;f->ctx.uc_link=&f->caller_ctx;makecontext(&f->ctx,(void(*)(void))sp_fiber_trampoline,0);swapcontext(&f->caller_ctx,&f->ctx);}else{f->state=1;swapcontext(&f->caller_ctx,&f->ctx);}sp_fiber_current=prev;return f->yielded_value;}")
+    emit_raw("static sp_RbVal sp_Fiber_yield(sp_RbVal val){sp_Fiber*f=sp_fiber_current;f->yielded_value=val;f->state=2;swapcontext(&f->ctx,&f->caller_ctx);return f->resumed_value;}")
+    emit_raw("static mrb_bool sp_Fiber_alive(sp_Fiber*f){return f->state!=3;}")
+    emit_raw("static sp_RbVal sp_Fiber_transfer(sp_Fiber*f,sp_RbVal val){f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_current=f;if(f->state==0){f->state=1;f->transferred=1;getcontext(&f->ctx);f->ctx.uc_stack.ss_sp=f->stack;f->ctx.uc_stack.ss_size=SP_FIBER_STACK_SIZE;f->ctx.uc_link=&prev->ctx;makecontext(&f->ctx,(void(*)(void))sp_fiber_trampoline,0);swapcontext(&prev->ctx,&f->ctx);}else{f->state=1;swapcontext(&prev->ctx,&f->ctx);}sp_fiber_current=prev;return prev->resumed_value;}")
     emit_raw("")
   end
 
@@ -8314,6 +8522,36 @@ class Compiler
         end
       end
     end
+    # Detect object array push: arr.push(ClassName.new(...))
+    if @nd_type[nid] == "CallNode"
+      if @nd_name[nid] == "push"
+        recv = @nd_receiver[nid]
+        if recv >= 0 && @nd_type[recv] == "LocalVariableReadNode"
+          arr_name = @nd_name[recv]
+          args_id = @nd_arguments[nid]
+          if args_id >= 0
+            aargs = get_args(args_id)
+            if aargs.length > 0
+              arg_type = infer_type(aargs[0])
+              if is_obj_type(arg_type) == 1
+                target_type = arg_type + "_ptr_array"
+                @needs_ptr_array = 1
+                @needs_gc = 1
+                ki = 0
+                while ki < names.length
+                  if names[ki] == arr_name
+                    if types[ki] == "int_array"
+                      types[ki] = target_type
+                    end
+                  end
+                  ki = ki + 1
+                end
+              end
+            end
+          end
+        end
+      end
+    end
     if @nd_type[nid] == "ForNode"
       tgt = @nd_target[nid]
       if tgt >= 0
@@ -8670,6 +8908,9 @@ class Compiler
 
     emit_raw("")
 
+    # Pre-scan: map lambda variable names to their return types
+    scan_lambda_ret_types(stmts)
+
     # Compile main statements
     stmts.each { |sid|
       if @nd_type[sid] != "DefNode"
@@ -8745,7 +8986,7 @@ class Compiler
       return "self"
     end
     if t == "LocalVariableReadNode"
-      return "lv_" + @nd_name[nid]
+      return fiber_var_ref(@nd_name[nid])
     end
     if t == "InstanceVariableReadNode"
       # Check if we're in a module class method
@@ -9223,6 +9464,164 @@ class Compiler
   end
 
 
+  # --- Fiber capture helpers ---
+
+  def fiber_capture_index(name)
+    i = 0
+    while i < @fiber_captures.length
+      if @fiber_captures[i] == name
+        return i
+      end
+      i = i + 1
+    end
+    -1
+  end
+
+  def heap_promoted_cell(name)
+    i = 0
+    while i < @heap_promoted_names.length
+      if @heap_promoted_names[i] == name
+        return @heap_promoted_cells[i]
+      end
+      i = i + 1
+    end
+    ""
+  end
+
+  def fiber_var_ref(name)
+    if @in_fiber_body == 1
+      if fiber_capture_index(name) >= 0
+        return "(*_cap->" + name + ")"
+      end
+    end
+    cell = heap_promoted_cell(name)
+    if cell != ""
+      return "(*" + cell + ")"
+    end
+    "lv_" + name
+  end
+
+
+  def scan_fiber_free_vars(nid, params, locals, free_vars, free_var_types)
+    if nid < 0
+      return
+    end
+    t = @nd_type[nid]
+    if t == "LocalVariableReadNode" || t == "LocalVariableTargetNode"
+      vn = @nd_name[nid]
+      if not_in(vn, params) == 1 && not_in(vn, locals) == 1 && not_in(vn, free_vars) == 1
+        vt = find_var_type(vn)
+        if vt != ""
+          free_vars.push(vn)
+          free_var_types.push(vt)
+        end
+      end
+      return
+    end
+    if t == "LocalVariableWriteNode"
+      vn = @nd_name[nid]
+      if not_in(vn, params) == 1 && not_in(vn, locals) == 1 && not_in(vn, free_vars) == 1
+        vt = find_var_type(vn)
+        if vt != ""
+          free_vars.push(vn)
+          free_var_types.push(vt)
+        end
+      end
+      # Also scan the expression
+      scan_fiber_free_vars(@nd_expression[nid], params, locals, free_vars, free_var_types)
+      return
+    end
+    if t == "LocalVariableOperatorWriteNode"
+      vn = @nd_name[nid]
+      if not_in(vn, params) == 1 && not_in(vn, locals) == 1 && not_in(vn, free_vars) == 1
+        vt = find_var_type(vn)
+        if vt != ""
+          free_vars.push(vn)
+          free_var_types.push(vt)
+        end
+      end
+      scan_fiber_free_vars(@nd_expression[nid], params, locals, free_vars, free_var_types)
+      return
+    end
+    # Stop at nested lambda/fiber boundaries (they handle their own captures)
+    if t == "LambdaNode"
+      return
+    end
+    if t == "CallNode"
+      # Stop at nested Fiber.new block bodies
+      mn = @nd_name[nid]
+      if mn == "new"
+        rv = @nd_receiver[nid]
+        if rv >= 0 && @nd_type[rv] == "ConstantReadNode" && @nd_name[rv] == "Fiber"
+          return
+        end
+      end
+    end
+    # Recurse into children (follow scan_locals_children pattern)
+    if @nd_body[nid] >= 0
+      scan_fiber_free_vars(@nd_body[nid], params, locals, free_vars, free_var_types)
+    end
+    if @nd_receiver[nid] >= 0
+      scan_fiber_free_vars(@nd_receiver[nid], params, locals, free_vars, free_var_types)
+    end
+    if @nd_expression[nid] >= 0
+      scan_fiber_free_vars(@nd_expression[nid], params, locals, free_vars, free_var_types)
+    end
+    if @nd_predicate[nid] >= 0
+      scan_fiber_free_vars(@nd_predicate[nid], params, locals, free_vars, free_var_types)
+    end
+    if @nd_subsequent[nid] >= 0
+      scan_fiber_free_vars(@nd_subsequent[nid], params, locals, free_vars, free_var_types)
+    end
+    if @nd_else_clause[nid] >= 0
+      scan_fiber_free_vars(@nd_else_clause[nid], params, locals, free_vars, free_var_types)
+    end
+    if @nd_arguments[nid] >= 0
+      scan_fiber_free_vars(@nd_arguments[nid], params, locals, free_vars, free_var_types)
+    end
+    if @nd_rescue_clause[nid] >= 0
+      scan_fiber_free_vars(@nd_rescue_clause[nid], params, locals, free_vars, free_var_types)
+    end
+    if @nd_ensure_clause[nid] >= 0
+      scan_fiber_free_vars(@nd_ensure_clause[nid], params, locals, free_vars, free_var_types)
+    end
+    # Stmts list
+    stmts_list = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < stmts_list.length
+      scan_fiber_free_vars(stmts_list[k], params, locals, free_vars, free_var_types)
+      k = k + 1
+    end
+    # Args list
+    args_list = parse_id_list(@nd_args[nid])
+    k = 0
+    while k < args_list.length
+      scan_fiber_free_vars(args_list[k], params, locals, free_vars, free_var_types)
+      k = k + 1
+    end
+    # Conditions list
+    conds_list = parse_id_list(@nd_conditions[nid])
+    k = 0
+    while k < conds_list.length
+      scan_fiber_free_vars(conds_list[k], params, locals, free_vars, free_var_types)
+      k = k + 1
+    end
+    # Elements list
+    elems_list = parse_id_list(@nd_elements[nid])
+    k = 0
+    while k < elems_list.length
+      scan_fiber_free_vars(elems_list[k], params, locals, free_vars, free_var_types)
+      k = k + 1
+    end
+    # Block body (for non-Fiber.new blocks)
+    blk = @nd_block[nid]
+    if blk >= 0
+      if @nd_body[blk] >= 0
+        scan_fiber_free_vars(@nd_body[blk], params, locals, free_vars, free_var_types)
+      end
+    end
+  end
+
   def compile_fiber_new(nid)
     @needs_fiber = 1
     blk = @nd_block[nid]
@@ -9249,39 +9648,94 @@ class Compiler
         end
       end
     end
+
+    body = @nd_body[blk]
+    # Scan all variables referenced in the body
+    all_names = "".split(",")
+    all_types = "".split(",")
+    all_plist = "".split(",")
+    if bp != ""
+      all_plist.push(bp)
+    end
+    if body >= 0
+      scan_locals(body, all_names, all_types, all_plist)
+    end
+
+    # Split into captures (exist in outer scope) vs true locals
+    free_vars = "".split(",")
+    free_var_types = "".split(",")
+    local_names = "".split(",")
+    local_types = "".split(",")
+    k = 0
+    while k < all_names.length
+      outer_type = find_var_type(all_names[k])
+      if outer_type != ""
+        # Variable exists in outer scope → capture
+        free_vars.push(all_names[k])
+        free_var_types.push(outer_type)
+      else
+        # True local variable
+        local_names.push(all_names[k])
+        local_types.push(all_types[k])
+      end
+      k = k + 1
+    end
+
+    # Also scan for read-only captures (variables read but not written in body)
+    if body >= 0
+      scan_fiber_free_vars(body, all_plist, all_names, free_vars, free_var_types)
+    end
+
     fid = @fiber_counter
     @fiber_counter = @fiber_counter + 1
     fname = "_fiber_body_" + fid.to_s
+    cap_name = "_fiber_cap_" + fid.to_s
+
+    # Build capture struct typedef if needed
+    cap_typedef = ""
+    if free_vars.length > 0
+      cap_typedef = "typedef struct {"
+      k = 0
+      while k < free_vars.length
+        cap_typedef = cap_typedef + " " + c_type(free_var_types[k]) + " *" + free_vars[k] + ";"
+        k = k + 1
+      end
+      cap_typedef = cap_typedef + " } " + cap_name + ";" + 10.chr
+    end
 
     # Compile fiber body function
     fbody = "static void " + fname + "(sp_Fiber *_fb) {" + 10.chr
-    if bp != ""
-      fbody = fbody + "  mrb_int lv_" + bp + " = _fb->resumed_value;" + 10.chr
+    if free_vars.length > 0
+      fbody = fbody + "  " + cap_name + " *_cap = (" + cap_name + "*)_fb->user_data;" + 10.chr
     end
-    # Compile body — save/restore compiler state
+    if bp != ""
+      fbody = fbody + "  sp_RbVal lv_" + bp + " = _fb->resumed_value;" + 10.chr
+    end
+
+    # Save/restore compiler state
     saved_out = @out
     saved_indent = @indent
+    saved_in_fiber_body = @in_fiber_body
+    saved_fiber_captures = @fiber_captures
+    saved_fiber_capture_types = @fiber_capture_types
+    saved_hp_names_len = @heap_promoted_names.length
+    saved_hp_cells_len = @heap_promoted_cells.length
     @out = ""
     @indent = 1
+    @in_fiber_body = 1
+    @fiber_captures = free_vars
+    @fiber_capture_types = free_var_types
 
     push_scope
     if bp != ""
-      declare_var(bp, "int")
+      declare_var(bp, "poly")
     end
-    body = @nd_body[blk]
     if body >= 0
-      # Declare locals in fiber body
-      lnames = "".split(",")
-      ltypes = "".split(",")
-      plist = "".split(",")
-      if bp != ""
-        plist.push(bp)
-      end
-      scan_locals(body, lnames, ltypes, plist)
+      # Declare only true locals (not captured vars)
       lk = 0
-      while lk < lnames.length
-        declare_var(lnames[lk], ltypes[lk])
-        emit("  " + c_type(ltypes[lk]) + " lv_" + lnames[lk] + " = " + c_default_val(ltypes[lk]) + ";")
+      while lk < local_names.length
+        declare_var(local_names[lk], local_types[lk])
+        emit("  " + c_type(local_types[lk]) + " lv_" + local_names[lk] + " = " + c_default_val(local_types[lk]) + ";")
         lk = lk + 1
       end
 
@@ -9293,24 +9747,95 @@ class Compiler
           i = i + 1
         end
         last = stmts.last
-        last_val = compile_expr(last)
-        emit("  _fb->yielded_value = (mrb_int)" + last_val + ";")
+        # Compile last as statement for side effects, then capture value
+        last_type = infer_type(last)
+        if @nd_type[last] == "LocalVariableWriteNode" || @nd_type[last] == "LocalVariableOperatorWriteNode"
+          compile_stmt(last)
+          last_val = compile_expr(last)
+        else
+          last_val = compile_expr(last)
+        end
+        emit("  _fb->yielded_value = " + box_val_to_poly(last_val, last_type) + ";")
       end
     end
     pop_scope
 
     fbody = fbody + @out
     fbody = fbody + "}" + 10.chr
-    @fiber_funcs = @fiber_funcs + fbody
+    @fiber_funcs = @fiber_funcs + cap_typedef + fbody
 
     @out = saved_out
     @indent = saved_indent
+    @in_fiber_body = saved_in_fiber_body
+    @fiber_captures = saved_fiber_captures
+    @fiber_capture_types = saved_fiber_capture_types
+    # Restore heap promoted lists to saved length
+    while @heap_promoted_names.length > saved_hp_names_len
+      @heap_promoted_names.pop
+    end
+    while @heap_promoted_cells.length > saved_hp_cells_len
+      @heap_promoted_cells.pop
+    end
 
-    # Declare locals in body (scan for LocalVariableWriteNode)
-    # Actually the above compile already handles this via the saved @out
+    # If no captures, return simple expression
+    if free_vars.length == 0
+      return "sp_Fiber_new(" + fname + ")"
+    end
 
-    # Return fiber creation expression
-    "sp_Fiber_new(" + fname + ")"
+    # Heap-promote captured variables (allocate cells if not already promoted)
+    k = 0
+    while k < free_vars.length
+      vn = free_vars[k]
+      already_promoted = 0
+      # Check outer scope heap promotions
+      ci = 0
+      while ci < @heap_promoted_names.length
+        if @heap_promoted_names[ci] == vn
+          already_promoted = 1
+        end
+        ci = ci + 1
+      end
+      # Check if variable is already a heap pointer from enclosing fiber capture
+      if already_promoted == 0 && @in_fiber_body == 1 && fiber_capture_index(vn) >= 0
+        # Reuse the enclosing fiber's capture pointer (_cap->vn is already a heap cell)
+        cell = "_cap->" + vn
+        @heap_promoted_names.push(vn)
+        @heap_promoted_cells.push(cell)
+        already_promoted = 1
+      end
+      if already_promoted == 0
+        cell = "_hcell_" + vn + "_" + fid.to_s
+        ct = c_type(free_var_types[k])
+        emit("  " + ct + " *" + cell + " = (" + ct + "*)sp_gc_alloc(sizeof(" + ct + "), NULL, NULL);")
+        emit("  *" + cell + " = " + fiber_var_ref(vn) + ";")
+        @heap_promoted_names.push(vn)
+        @heap_promoted_cells.push(cell)
+      end
+      k = k + 1
+    end
+
+    # Heap-allocate capture struct
+    tmp_fb = "_tmpfb_" + fid.to_s
+    cap_ptr = "_cap_ptr_" + fid.to_s
+    emit("  " + cap_name + " *" + cap_ptr + " = (" + cap_name + "*)sp_gc_alloc(sizeof(" + cap_name + "), NULL, NULL);")
+    k = 0
+    while k < free_vars.length
+      vn = free_vars[k]
+      # Find the cell for this variable
+      ci = 0
+      cell = ""
+      while ci < @heap_promoted_names.length
+        if @heap_promoted_names[ci] == vn
+          cell = @heap_promoted_cells[ci]
+        end
+        ci = ci + 1
+      end
+      emit("  " + cap_ptr + "->" + vn + " = " + cell + ";")
+      k = k + 1
+    end
+    emit("  sp_Fiber *" + tmp_fb + " = sp_Fiber_new(" + fname + ");")
+    emit("  " + tmp_fb + "->user_data = " + cap_ptr + ";")
+    tmp_fb
   end
 
   def compile_call_expr(nid)
@@ -9327,18 +9852,62 @@ class Compiler
     end
     # fiber.resume(val)
     if mname == "resume" && recv >= 0
-      rt2 = infer_type(recv)
+      rt2 = base_type(infer_type(recv))
       if rt2 == "fiber"
         rc = compile_expr(recv)
-        val = compile_arg0(nid)
-        return "sp_Fiber_resume(" + rc + ", " + val + ")"
+        args_id = @nd_arguments[nid]
+        if args_id >= 0
+          arg_ids = get_args(args_id)
+          if arg_ids.length > 0
+            return "sp_Fiber_resume(" + rc + ", " + box_expr_to_poly(arg_ids[0]) + ")"
+          end
+        end
+        return "sp_Fiber_resume(" + rc + ", sp_box_nil())"
       end
     end
     # Fiber.yield(val)
     if mname == "yield" && recv >= 0
       if @nd_type[recv] == "ConstantReadNode"
         if @nd_name[recv] == "Fiber"
-          return "sp_Fiber_yield(" + compile_arg0(nid) + ")"
+          args_id = @nd_arguments[nid]
+          if args_id >= 0
+            arg_ids = get_args(args_id)
+            if arg_ids.length > 0
+              return "sp_Fiber_yield(" + box_expr_to_poly(arg_ids[0]) + ")"
+            end
+          end
+          return "sp_Fiber_yield(sp_box_nil())"
+        end
+      end
+    end
+    # fiber.alive?
+    if mname == "alive?" && recv >= 0
+      rt2 = base_type(infer_type(recv))
+      if rt2 == "fiber"
+        rc = compile_expr(recv)
+        return "sp_Fiber_alive(" + rc + ")"
+      end
+    end
+    # fiber.transfer(val)
+    if mname == "transfer" && recv >= 0
+      rt2 = base_type(infer_type(recv))
+      if rt2 == "fiber"
+        rc = compile_expr(recv)
+        args_id = @nd_arguments[nid]
+        if args_id >= 0
+          arg_ids = get_args(args_id)
+          if arg_ids.length > 0
+            return "sp_Fiber_transfer(" + rc + ", " + box_expr_to_poly(arg_ids[0]) + ")"
+          end
+        end
+        return "sp_Fiber_transfer(" + rc + ", sp_box_nil())"
+      end
+    end
+    # Fiber.current
+    if mname == "current" && recv >= 0
+      if @nd_type[recv] == "ConstantReadNode"
+        if @nd_name[recv] == "Fiber"
+          return "sp_fiber_current"
         end
       end
     end
@@ -9389,6 +9958,27 @@ class Compiler
 
     recv_type = infer_type(recv)
     rc = compile_expr(recv)
+    # Root receiver if it may be collected during argument evaluation
+    if expr_may_gc(recv) == 1 && type_is_pointer(recv_type) == 1
+      args_id = @nd_arguments[nid]
+      if args_id >= 0
+        aargs = get_args(args_id)
+        has_gc_arg = 0
+        ak = 0
+        while ak < aargs.length
+          if expr_may_gc(aargs[ak]) == 1
+            has_gc_arg = 1
+          end
+          ak = ak + 1
+        end
+        if has_gc_arg == 1
+          tmp = new_temp
+          emit("  " + c_type(recv_type) + " " + tmp + " = " + rc + ";")
+          emit("  SP_GC_ROOT(" + tmp + ");")
+          rc = tmp
+        end
+      end
+    end
 
     # StringIO methods
     if recv_type == "stringio"
@@ -9765,27 +10355,25 @@ class Compiler
 
   def compile_lambda_call_expr(nid, mname, recv)
     rc = compile_expr(recv)
-    if mname == "[]"
-      args_id = @nd_arguments[nid]
-      if args_id >= 0
-        aargs = get_args(args_id)
-        if aargs.length > 0
-          ac = wrap_as_sp_val(aargs.first)
-          return "sp_lam_call(" + rc + ", " + ac + ")"
-        end
-      end
-      return "sp_lam_call(" + rc + ", &sp_lam_nil_val)"
+    # Determine return type unboxing
+    ret_type = ""
+    if @nd_type[recv] == "LocalVariableReadNode"
+      ret_type = lambda_var_ret_type(@nd_name[recv])
     end
-    if mname == "call"
+    if mname == "[]" || mname == "call"
+      call_expr = ""
       args_id = @nd_arguments[nid]
       if args_id >= 0
         aargs = get_args(args_id)
         if aargs.length > 0
           ac = wrap_as_sp_val(aargs.first)
-          return "sp_lam_call(" + rc + ", " + ac + ")"
+          call_expr = "sp_lam_call(" + rc + ", " + ac + ")"
         end
       end
-      return "sp_lam_call(" + rc + ", &sp_lam_nil_val)"
+      if call_expr == ""
+        call_expr = "sp_lam_call(" + rc + ", &sp_lam_nil_val)"
+      end
+      return lam_unbox(call_expr, ret_type)
     end
     ""
   end
@@ -10732,6 +11320,22 @@ class Compiler
         return "sp_FloatArray_length(" + rc + ")"
       end
     end
+    if is_ptr_array_type(recv_type) == 1
+      elem_type = ptr_array_elem_type(recv_type)
+      ct = c_type(elem_type)
+      if mname == "length" || mname == "size"
+        return "sp_PtrArray_length(" + rc + ")"
+      end
+      if mname == "[]"
+        return "(" + ct + ")sp_PtrArray_get(" + rc + ", " + compile_arg0(nid) + ")"
+      end
+      if mname == "push"
+        return "(sp_PtrArray_push(" + rc + ", " + compile_arg0(nid) + "), 0)"
+      end
+      if mname == "empty?"
+        return "sp_PtrArray_empty(" + rc + ")"
+      end
+    end
     if recv_type == "str_array"
       if mname == "length"
         return "sp_StrArray_length(" + rc + ")"
@@ -11174,7 +11778,8 @@ class Compiler
   def compile_object_method_expr(nid, mname, rc, recv_type)
     # Object method calls
     if is_obj_type(recv_type) == 1
-      cname = recv_type[4, recv_type.length - 4]
+      bt = base_type(recv_type)
+      cname = bt[4, bt.length - 4]
       ci = find_class_idx(cname)
       if ci >= 0
         arrow = "->"
@@ -11409,6 +12014,28 @@ class Compiler
     "sp_box_int(" + val + ")"
   end
 
+  def box_val_to_poly(val, at)
+    if at == "poly"
+      return val
+    end
+    if at == "int"
+      return "sp_box_int(" + val + ")"
+    end
+    if at == "string"
+      return "sp_box_str(" + val + ")"
+    end
+    if at == "float"
+      return "sp_box_float(" + val + ")"
+    end
+    if at == "bool"
+      return "sp_box_bool(" + val + ")"
+    end
+    if at == "nil"
+      return "sp_box_nil()"
+    end
+    "sp_box_int(" + val + ")"
+  end
+
   def compile_call_args_with_defaults(nid, mi)
     args_id = @nd_arguments[nid]
     arg_ids = []
@@ -11610,6 +12237,18 @@ class Compiler
       return ""
     end
     arg_ids = get_args(args_id)
+    # Check if multiple args may trigger GC
+    gc_count = 0
+    k = 0
+    while k < arg_ids.length
+      if expr_may_gc(arg_ids[k]) == 1
+        gc_count = gc_count + 1
+      end
+      k = k + 1
+    end
+    if gc_count >= 2
+      return compile_gc_safe_args(arg_ids)
+    end
     result = ""
     k = 0
     while k < arg_ids.length
@@ -11617,6 +12256,36 @@ class Compiler
         result = result + ", "
       end
       result = result + compile_expr(arg_ids[k])
+      k = k + 1
+    end
+    result
+  end
+
+  def compile_gc_safe_args(arg_ids)
+    temps = "".split(",")
+    k = 0
+    while k < arg_ids.length
+      if expr_may_gc(arg_ids[k]) == 1
+        tmp = new_temp
+        at = infer_type(arg_ids[k])
+        ct = c_type(at)
+        emit("  " + ct + " " + tmp + " = " + compile_expr(arg_ids[k]) + ";")
+        if type_is_pointer(at) == 1
+          emit("  SP_GC_ROOT(" + tmp + ");")
+        end
+        temps.push(tmp)
+      else
+        temps.push(compile_expr(arg_ids[k]))
+      end
+      k = k + 1
+    end
+    result = ""
+    k = 0
+    while k < temps.length
+      if k > 0
+        result = result + ", "
+      end
+      result = result + temps[k]
       k = k + 1
     end
     result
@@ -11864,64 +12533,81 @@ class Compiler
           end
         end
       end
+      vref = fiber_var_ref(lname)
       vt = find_var_type(lname)
+      # ptr_array: empty array literal should create PtrArray
+      if is_ptr_array_type(vt) == 1
+        expr_id = @nd_expression[nid]
+        if expr_id >= 0 && @nd_type[expr_id] == "ArrayNode"
+          elems = parse_id_list(@nd_elements[expr_id])
+          if elems.length == 0
+            @needs_ptr_array = 1
+            @needs_gc = 1
+            emit("  " + vref + " = sp_PtrArray_new();")
+            return
+          end
+        end
+      end
       if vt == "poly"
         # Box the value
-        emit("  lv_" + lname + " = " + box_expr_to_poly(@nd_expression[nid]) + ";")
+        emit("  " + vref + " = " + box_expr_to_poly(@nd_expression[nid]) + ";")
         return
       end
       if vt == "mutable_str"
         rhs_type = infer_type(@nd_expression[nid])
         val = compile_expr(@nd_expression[nid])
         if rhs_type == "string" || rhs_type == "int"
-          emit("  lv_" + lname + " = sp_String_new(" + val + ");")
+          emit("  " + vref + " = sp_String_new(" + val + ");")
         else
-          emit("  lv_" + lname + " = " + val + ";")
+          emit("  " + vref + " = " + val + ";")
         end
         return
       end
       rhs_t = infer_type(@nd_expression[nid])
       if rhs_t == "nil" && is_nullable_type(vt) == 1
-        emit("  lv_" + lname + " = NULL;")
+        emit("  " + vref + " = NULL;")
       else
         val = compile_expr(@nd_expression[nid])
-        emit("  lv_" + lname + " = " + val + ";")
+        emit("  " + vref + " = " + val + ";")
       end
-      set_var_type(lname, rhs_t)
+      if rhs_t != "nil" || is_nullable_type(vt) == 0
+        set_var_type(lname, rhs_t)
+      end
       return
     end
     if t == "LocalVariableOperatorWriteNode"
       op = @nd_binop[nid]
       val = compile_expr(@nd_expression[nid])
+      vref = fiber_var_ref(@nd_name[nid])
       if op == "+"
-        emit("  lv_" + @nd_name[nid] + " += " + val + ";")
+        emit("  " + vref + " += " + val + ";")
       end
       if op == "-"
-        emit("  lv_" + @nd_name[nid] + " -= " + val + ";")
+        emit("  " + vref + " -= " + val + ";")
       end
       if op == "*"
-        emit("  lv_" + @nd_name[nid] + " *= " + val + ";")
+        emit("  " + vref + " *= " + val + ";")
       end
       if op == "/"
-        emit("  lv_" + @nd_name[nid] + " /= " + val + ";")
+        emit("  " + vref + " /= " + val + ";")
       end
       if op == "%"
-        emit("  lv_" + @nd_name[nid] + " = sp_imod(lv_" + @nd_name[nid] + ", " + val + ");")
+        emit("  " + vref + " = sp_imod(" + vref + ", " + val + ");")
       end
       if op == "<<"
-        emit("  lv_" + @nd_name[nid] + " <<= " + val + ";")
+        emit("  " + vref + " <<= " + val + ";")
       end
       if op == ">>"
-        emit("  lv_" + @nd_name[nid] + " >>= " + val + ";")
+        emit("  " + vref + " >>= " + val + ";")
       end
       if op == "&"
-        emit("  lv_" + @nd_name[nid] + " &= " + val + ";")
+        emit("  " + vref + " &= " + val + ";")
       end
       if op == "|"
-        emit("  lv_" + @nd_name[nid] + " |= " + val + ";")
+        emit("  " + vref + " |= " + val + ";")
       end
       if op == "^"
-        emit("  lv_" + @nd_name[nid] + " ^= " + val + ";")
+        emit("  " + vref + " ^= " + val + ";")
       end
       return
     end
@@ -12059,7 +12745,7 @@ class Compiler
         if k < tmps.length
           tid = targets[k]
           if @nd_type[tid] == "LocalVariableTargetNode"
-            emit("  lv_" + @nd_name[tid] + " = " + tmps[k] + ";")
+            emit("  " + fiber_var_ref(@nd_name[tid]) + " = " + tmps[k] + ";")
           end
           if @nd_type[tid] == "InstanceVariableTargetNode"
             iname = @nd_name[tid]
@@ -12098,7 +12784,7 @@ class Compiler
       while k < targets.length
         tid = targets[k]
         if @nd_type[tid] == "LocalVariableTargetNode"
-          emit("  lv_" + @nd_name[tid] + " = sp_IntArray_get(" + tmp + ", " + k.to_s + ");")
+          emit("  " + fiber_var_ref(@nd_name[tid]) + " = sp_IntArray_get(" + tmp + ", " + k.to_s + ");")
         end
         k = k + 1
       end
@@ -13195,14 +13881,27 @@ class Compiler
       end
       return
     end
-    # Collect local writes as locals
+    # Collect local writes — scan expression first to detect reads before the write
     if t == "LocalVariableWriteNode"
       vn = @nd_name[nid]
+      # Scan the RHS expression first (may contain reads of the same var)
+      if @nd_expression[nid] >= 0
+        scan_lambda_free_vars(@nd_expression[nid], params, locals, free_vars)
+      end
       if not_in(vn, locals) == 1
         if not_in(vn, params) == 1
-          locals.push(vn)
+          if not_in(vn, free_vars) == 1
+            # Check if variable exists in outer scope — if so, it's a free var
+            outer_t = find_var_type(vn)
+            if outer_t != ""
+              free_vars.push(vn)
+            else
+              locals.push(vn)
+            end
+          end
         end
       end
+      return
     end
     # Recurse
     if @nd_body[nid] >= 0
@@ -13258,6 +13957,138 @@ class Compiler
     end
   end
 
+  def scan_lambda_ret_types(stmts)
+    stmts.each { |sid|
+      scan_lambda_ret_types_node(sid)
+    }
+    # Also check: h = method_call() where method returns lambda
+    stmts.each { |sid|
+      if @nd_type[sid] == "LocalVariableWriteNode"
+        vn = @nd_name[sid]
+        expr = @nd_expression[sid]
+        if expr >= 0 && @nd_type[expr] == "CallNode"
+          call_ret = infer_type(expr)
+          if call_ret == "lambda"
+            # Find the method and its lambda return
+            mn = @nd_name[expr]
+            mi = find_method_idx(mn)
+            if mi >= 0
+              bid = @meth_body_ids[mi]
+              if bid >= 0
+                mbs = get_stmts(bid)
+                if mbs.length > 0
+                  last = mbs.last
+                  if @nd_type[last] == "LambdaNode"
+                    lbody = @nd_body[last]
+                    if lbody >= 0
+                      lbs = get_stmts(lbody)
+                      if lbs.length > 0
+                        lrt = infer_type(lbs.last)
+                        if not_in(vn, @lambda_var_ret_names) == 1
+                          @lambda_var_ret_names.push(vn)
+                          @lambda_var_ret_types.push(lrt)
+                        end
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    }
+  end
+
+  def scan_lambda_ret_types_node(nid)
+    if nid < 0
+      return
+    end
+    t = @nd_type[nid]
+    if t == "LocalVariableWriteNode"
+      vn = @nd_name[nid]
+      expr = @nd_expression[nid]
+      if expr >= 0 && @nd_type[expr] == "LambdaNode"
+        lbody = @nd_body[expr]
+        if lbody >= 0
+          lbs = get_stmts(lbody)
+          if lbs.length > 0
+            lrt = infer_type(lbs.last)
+            if not_in(vn, @lambda_var_ret_names) == 1
+              @lambda_var_ret_names.push(vn)
+              @lambda_var_ret_types.push(lrt)
+            end
+          end
+        end
+      end
+      scan_lambda_ret_types_node(expr)
+    end
+    # Scan into method bodies to find lambdas returned from methods
+    if t == "DefNode"
+      if @nd_body[nid] >= 0
+        scan_lambda_ret_types_node(@nd_body[nid])
+      end
+      return
+    end
+    if @nd_body[nid] >= 0
+      scan_lambda_ret_types_node(@nd_body[nid])
+    end
+    if @nd_expression[nid] >= 0
+      scan_lambda_ret_types_node(@nd_expression[nid])
+    end
+    ss = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < ss.length
+      scan_lambda_ret_types_node(ss[k])
+      k = k + 1
+    end
+  end
+
+  def lambda_var_ret_type(vname)
+    i = 0
+    while i < @lambda_var_ret_names.length
+      if @lambda_var_ret_names[i] == vname
+        return @lambda_var_ret_types[i]
+      end
+      i = i + 1
+    end
+    ""
+  end
+
+  def lam_box(expr, vtype)
+    bt = base_type(vtype)
+    if bt == "string"
+      return "sp_lam_int((mrb_int)" + expr + ")"
+    end
+    if bt == "float"
+      return "sp_lam_int(*(mrb_int*)&(mrb_float){" + expr + "})"
+    end
+    if bt == "bool"
+      return "sp_lam_bool(" + expr + ")"
+    end
+    if bt == "nil" || bt == "void"
+      return "&sp_lam_nil_val"
+    end
+    "sp_lam_int(" + expr + ")"
+  end
+
+  def lam_unbox(expr, vtype)
+    bt = base_type(vtype)
+    if bt == "string"
+      return "(const char*)sp_lam_to_int(" + expr + ")"
+    end
+    if bt == "float"
+      return "*(mrb_float*)&(mrb_int){sp_lam_to_int(" + expr + ")}"
+    end
+    if bt == "bool"
+      return "(" + expr + ")->u.bval"
+    end
+    if bt == "nil" || bt == "void"
+      return "(sp_lam_to_int(" + expr + "), 0)"
+    end
+    "sp_lam_to_int(" + expr + ")"
+  end
+
   def compile_lambda_body_expr(nid, params, captures)
     # Compile an expression inside a lambda body, replacing:
     # - param refs with lv_param (local)
@@ -13276,6 +14107,15 @@ class Compiler
       ci = 0
       while ci < captures.length
         if captures[ci] == vn
+          ct = ""
+          if ci < @lambda_capture_cell_types.length
+            ct = @lambda_capture_cell_types[ci]
+          end
+          if ct != ""
+            # Typed cell capture: dereference and box
+            deref = "*(" + c_type(ct) + "*)self->captures[" + ci.to_s + "]"
+            return lam_box(deref, ct)
+          end
           return "self->captures[" + ci.to_s + "]"
         end
         ci = ci + 1
@@ -13289,6 +14129,15 @@ class Compiler
       ci = 0
       while ci < captures.length
         if captures[ci] == vn
+          ct = ""
+          if ci < @lambda_capture_cell_types.length
+            ct = @lambda_capture_cell_types[ci]
+          end
+          if ct != ""
+            # Typed cell capture: unbox and store
+            cptr = "*(" + c_type(ct) + "*)self->captures[" + ci.to_s + "]"
+            return "(" + cptr + " = " + lam_unbox(val, ct) + ", " + val + ")"
+          end
           return "(self->captures[" + ci.to_s + "] = " + val + ")"
         end
         ci = ci + 1
@@ -13458,23 +14307,160 @@ class Compiler
     @lambda_counter = @lambda_counter + 1
     fname = "_lam_" + lam_id.to_s
 
+    # Compute capture cell types (before body compilation)
+    cap_cell_types = "".split(",")
+    k = 0
+    while k < free_vars.length
+      fv = free_vars[k]
+      cell = heap_promoted_cell(fv)
+      if cell == "" && @in_fiber_body == 1 && fiber_capture_index(fv) >= 0
+        cell = "_cap->" + fv
+      end
+      # Regular locals will be heap-promoted (not lambda params/captures)
+      if cell == "" && not_in(fv, @lambda_params) == 1
+        is_enclosing_cap = 0
+        ci = 0
+        while ci < @lambda_captures.length
+          if @lambda_captures[ci] == fv
+            is_enclosing_cap = 1
+          end
+          ci = ci + 1
+        end
+        if is_enclosing_cap == 0
+          vt = find_var_type(fv)
+          if vt != "" && vt != "lambda"
+            cell = "will_promote"
+          end
+        end
+      end
+      if cell != ""
+        cap_cell_types.push(find_var_type(fv))
+      else
+        cap_cell_types.push("")
+      end
+      k = k + 1
+    end
+
+    # Check if we have typed cell captures (need regular compiler path)
+    has_typed_caps = 0
+    k = 0
+    while k < cap_cell_types.length
+      if cap_cell_types[k] != ""
+        has_typed_caps = 1
+      end
+      k = k + 1
+    end
+
     # Get body expression
     bexpr = "&sp_lam_nil_val"
     if body >= 0
       bs = get_stmts(body)
-      if bs.length > 0
-        # Save current output and context, compile body into lambda function
+      if bs.length > 0 && has_typed_caps == 1
+        # Typed captures: compile body using regular compiler
+        save_out = @out
+        save_indent = @indent
+        save_hp_names_len = @heap_promoted_names.length
+        save_hp_cells_len = @heap_promoted_cells.length
+        @out = ""
+        @indent = 1
+
+        push_scope
+        # Declare parameter with proper type
+        if pname != ""
+          ptype = infer_type(bs.last)
+          if ptype == ""
+            ptype = "int"
+          end
+          declare_var(pname, "int")
+        end
+        # Set up cell pointer locals for typed captures
+        k = 0
+        while k < free_vars.length
+          if cap_cell_types[k] != ""
+            ct = c_type(cap_cell_types[k])
+            cell_local = "_lc_" + free_vars[k]
+            emit("  " + ct + " *" + cell_local + " = (" + ct + "*)self->captures[" + k.to_s + "];")
+            @heap_promoted_names.push(free_vars[k])
+            @heap_promoted_cells.push(cell_local)
+            declare_var(free_vars[k], cap_cell_types[k])
+          end
+          k = k + 1
+        end
+        # Declare body-local variables
+        lnames = "".split(",")
+        ltypes = "".split(",")
+        excl = "".split(",")
+        if pname != ""
+          excl.push(pname)
+        end
+        k = 0
+        while k < free_vars.length
+          excl.push(free_vars[k])
+          k = k + 1
+        end
+        scan_locals(body, lnames, ltypes, excl)
+        lk = 0
+        while lk < lnames.length
+          declare_var(lnames[lk], ltypes[lk])
+          emit("  " + c_type(ltypes[lk]) + " lv_" + lnames[lk] + " = " + c_default_val(ltypes[lk]) + ";")
+          lk = lk + 1
+        end
+        # Compile body statements
+        i = 0
+        while i < bs.length - 1
+          compile_stmt(bs[i])
+          i = i + 1
+        end
+        last = bs.last
+        last_type = infer_type(last)
+        if @nd_type[last] == "LocalVariableWriteNode" || @nd_type[last] == "LocalVariableOperatorWriteNode"
+          compile_stmt(last)
+        end
+        last_val = compile_expr(last)
+
+        pop_scope
+        body_stmts = @out
+        @out = save_out
+        @indent = save_indent
+        # Restore heap promoted
+        while @heap_promoted_names.length > save_hp_names_len
+          @heap_promoted_names.pop
+        end
+        while @heap_promoted_cells.length > save_hp_cells_len
+          @heap_promoted_cells.pop
+        end
+
+        # Build lambda function with typed body
+        @lambda_funcs = @lambda_funcs + "static sp_Val *" + fname + "(sp_Val *self, sp_Val *arg) {\n"
+        if pname != ""
+          @lambda_funcs = @lambda_funcs + "  mrb_int lv_" + pname + " = sp_lam_to_int(arg);\n"
+        end
+        @lambda_funcs = @lambda_funcs + body_stmts + 10.chr
+        bexpr = lam_box(last_val, last_type)
+        @lambda_funcs = @lambda_funcs + "  return " + bexpr + ";\n"
+        @lambda_funcs = @lambda_funcs + "}\n\n"
+      elsif bs.length > 0
+        # No typed captures: use sp_Val* lambda body compiler
         save_out = @out
         save_params = @lambda_params
         save_captures = @lambda_captures
+        save_cell_types = @lambda_capture_cell_types
         @out = ""
         @lambda_params = param_arr
         @lambda_captures = free_vars
+        @lambda_capture_cell_types = cap_cell_types
+        si = 0
+        while si < bs.length - 1
+          side_expr = compile_lambda_body_expr(bs[si], param_arr, free_vars)
+          emit("  " + side_expr + ";")
+          si = si + 1
+        end
         bexpr = compile_lambda_body_expr(bs.last, param_arr, free_vars)
         body_stmts = @out
         @out = save_out
         @lambda_params = save_params
         @lambda_captures = save_captures
+        @lambda_capture_cell_types = save_cell_types
 
         if body_stmts != ""
           @lambda_funcs = @lambda_funcs + "static sp_Val *" + fname + "(sp_Val *self, sp_Val *arg) {\n"
@@ -13503,27 +14489,63 @@ class Compiler
 
     # Build the closure creation expression
     if free_vars.length > 0
+      # Heap-promote regular locals that need cell captures
+      k = 0
+      while k < free_vars.length
+        if cap_cell_types[k] != "" && heap_promoted_cell(free_vars[k]) == ""
+          fv = free_vars[k]
+          # Skip if it's a fiber capture (already has cell) or lambda context
+          if @in_fiber_body == 0 || fiber_capture_index(fv) < 0
+            if not_in(fv, @heap_promoted_names) == 1
+              ct = c_type(cap_cell_types[k])
+              cell = "_hcell_" + fv + "_l" + lam_id.to_s
+              emit("  " + ct + " *" + cell + " = (" + ct + "*)sp_gc_alloc(sizeof(" + ct + "), NULL, NULL);")
+              emit("  *" + cell + " = " + fiber_var_ref(fv) + ";")
+              @heap_promoted_names.push(fv)
+              @heap_promoted_cells.push(cell)
+            end
+          end
+        end
+        k = k + 1
+      end
       tmp = new_temp
       emit("  sp_Val *" + tmp + " = sp_lam_proc(" + fname + ", " + free_vars.length.to_s + ");")
       k = 0
       while k < free_vars.length
-        # Resolve the free variable reference in the enclosing context
         fv = free_vars[k]
-        fv_ref = "lv_" + fv
-        # Check if it's a param of enclosing lambda
-        if not_in(fv, @lambda_params) == 0
-          fv_ref = "lv_" + fv
+        if cap_cell_types[k] != ""
+          # Heap-promoted or fiber-captured: store cell pointer cast to sp_Val*
+          cell = heap_promoted_cell(fv)
+          if cell == "" && @in_fiber_body == 1 && fiber_capture_index(fv) >= 0
+            cell = "_cap->" + fv
+          end
+          emit("  " + tmp + "->captures[" + k.to_s + "] = (sp_Val*)" + cell + ";")
         else
-          # Check if it's a capture of enclosing lambda
-          ci = 0
-          while ci < @lambda_captures.length
-            if @lambda_captures[ci] == fv
-              fv_ref = "self->captures[" + ci.to_s + "]"
+          # Check if it's a param or capture of enclosing lambda (sp_Val* world)
+          is_lam_ctx = 0
+          if not_in(fv, @lambda_params) == 0
+            is_lam_ctx = 1
+            emit("  " + tmp + "->captures[" + k.to_s + "] = lv_" + fv + ";")
+          else
+            ci = 0
+            while ci < @lambda_captures.length
+              if @lambda_captures[ci] == fv
+                is_lam_ctx = 1
+                emit("  " + tmp + "->captures[" + k.to_s + "] = self->captures[" + ci.to_s + "];")
+              end
+              ci = ci + 1
             end
-            ci = ci + 1
+          end
+          if is_lam_ctx == 0
+            # Regular local: should have been heap-promoted already
+            cell = heap_promoted_cell(fv)
+            if cell != ""
+              emit("  " + tmp + "->captures[" + k.to_s + "] = (sp_Val*)" + cell + ";")
+            else
+              emit("  " + tmp + "->captures[" + k.to_s + "] = " + fiber_var_ref(fv) + ";")
+            end
           end
         end
-        emit("  " + tmp + "->captures[" + k.to_s + "] = " + fv_ref + ";")
         k = k + 1
       end
       return tmp
