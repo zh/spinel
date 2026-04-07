@@ -83,13 +83,13 @@ build/sp_bigint.o: lib/sp_bigint.c lib/sp_bigint.h lib/mruby_shim.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all -Ilib lib/sp_bigint.c -o build/sp_bigint.o
 
-test: spinel_parse spinel_codegen build/sp_bigint.o
+test: spinel_parse spinel_codegen build/sp_bigint.o $(RE_LIB)
 	@pass=0; fail=0; err=0; \
 	for f in test/*.rb; do \
 	  bn=$$(basename "$$f" .rb); \
 	  ./spinel_parse "$$f" /tmp/_sp_t.ast 2>/dev/null && \
 	  ./spinel_codegen /tmp/_sp_t.ast /tmp/_sp_t.c 2>/dev/null && \
-	  $(CC) $(CFLAGS) /tmp/_sp_t.c build/sp_bigint.o -lm -o /tmp/_sp_t_bin 2>/dev/null; \
+	  $(CC) $(CFLAGS) /tmp/_sp_t.c build/sp_bigint.o $(RE_LIB) -lm -o /tmp/_sp_t_bin 2>/dev/null; \
 	  if [ $$? -eq 0 ]; then \
 	    expected=$$(timeout 10 ruby "$$f" 2>/dev/null); \
 	    actual=$$(timeout 10 /tmp/_sp_t_bin 2>/dev/null); \
@@ -105,13 +105,13 @@ test: spinel_parse spinel_codegen build/sp_bigint.o
 	rm -f /tmp/_sp_t.ast /tmp/_sp_t.c /tmp/_sp_t_bin; \
 	echo "Tests: $$pass pass, $$fail fail, $$err error"
 
-bench: spinel_parse spinel_codegen
+bench: spinel_parse spinel_codegen build/sp_bigint.o $(RE_LIB)
 	@pass=0; fail=0; \
 	for f in benchmark/*.rb; do \
 	  bn=$$(basename "$$f" .rb); \
 	  ./spinel_parse "$$f" /tmp/_sp_b.ast 2>/dev/null && \
 	  ./spinel_codegen /tmp/_sp_b.ast /tmp/_sp_b.c 2>/dev/null && \
-	  $(CC) $(CFLAGS) /tmp/_sp_b.c -lm -o /tmp/_sp_b_bin 2>/dev/null; \
+	  $(CC) $(CFLAGS) /tmp/_sp_b.c build/sp_bigint.o $(RE_LIB) -lm -o /tmp/_sp_b_bin 2>/dev/null; \
 	  if [ $$? -eq 0 ]; then \
 	    expected=$$(timeout 60 ruby "$$f" 2>/dev/null); \
 	    actual=$$(timeout 60 /tmp/_sp_b_bin 2>/dev/null); \
