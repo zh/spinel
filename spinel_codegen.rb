@@ -11207,9 +11207,9 @@ class Compiler
     if mname == "=~"
       # str =~ /pattern/ → sp_re_match(pat, str)
       rc = compile_expr(recv)
-      arg = @nd_arguments[nid]
-      if arg >= 0
-        argl = get_args(@nd_arguments[nid])
+      re_args_id = @nd_arguments[nid]
+      if re_args_id >= 0
+        argl = get_args(re_args_id)
         if argl.length > 0
           ridx = find_regexp_index(argl[0])
           if ridx >= 0
@@ -11479,9 +11479,9 @@ class Compiler
       return "sp_str_split(" + rc + ", " + compile_arg0(nid) + ")"
     end
     if mname == "match?"
-      arg = @nd_arguments[nid]
-      if arg >= 0
-        argl = get_args(arg)
+      re_args_id = @nd_arguments[nid]
+      if re_args_id >= 0
+        argl = get_args(re_args_id)
         if argl.length > 0
           ridx = find_regexp_index(argl[0])
           if ridx >= 0
