@@ -936,36 +936,66 @@ class Compiler
       return unify_return_type(types)
     end
     if t == "CaseMatchNode"
-      # Infer from first in branch
+      types = "".split(",")
       conds = parse_id_list(@nd_conditions[nid])
-      if conds.length > 0
-        inid = conds.first
+      k = 0
+      while k < conds.length
+        inid = conds[k]
         if @nd_type[inid] == "InNode"
           ibody = @nd_body[inid]
           if ibody >= 0
             is = get_stmts(ibody)
             if is.length > 0
-              return infer_type(is.last)
+              types.push(infer_type(is.last))
             end
           end
         end
+        k = k + 1
+      end
+      ec = @nd_else_clause[nid]
+      if ec >= 0
+        ebody = @nd_body[ec]
+        if ebody >= 0
+          es = get_stmts(ebody)
+          if es.length > 0
+            types.push(infer_type(es.last))
+          end
+        end
+      end
+      if types.length > 0
+        return unify_return_type(types)
       end
       return "int"
     end
     if t == "CaseNode"
-      # Infer from first when branch
+      types = "".split(",")
       conds = parse_id_list(@nd_conditions[nid])
-      if conds.length > 0
-        wid = conds.first
+      k = 0
+      while k < conds.length
+        wid = conds[k]
         if @nd_type[wid] == "WhenNode"
           wbody = @nd_body[wid]
           if wbody >= 0
             ws = get_stmts(wbody)
             if ws.length > 0
-              return infer_type(ws.last)
+              types.push(infer_type(ws.last))
             end
           end
         end
+        k = k + 1
+      end
+      ec = @nd_else_clause[nid]
+      if ec >= 0
+        ebody = @nd_body[ec]
+        if ebody >= 0
+          es = get_stmts(ebody)
+          if es.length > 0
+            types.push(infer_type(es.last))
+          end
+        end
+      end
+      if types.length > 0
+        return unify_return_type(types)
       end
       return "int"
     end
