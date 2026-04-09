@@ -1322,6 +1322,9 @@ class Compiler
         if lt == "poly"
           return "poly"
         end
+        if lt == "int_array" || lt == "str_array" || lt == "float_array"
+          return lt
+        end
         if lt == "float"
           return "float"
         end
@@ -11214,6 +11217,17 @@ class Compiler
         @needs_string_helpers = 1
         return "sp_poly_add(" + compile_expr(recv) + ", " + box_expr_to_poly(@nd_arguments[nid] >= 0 ? get_args(@nd_arguments[nid])[0] : -1) + ")"
       end
+      if lt == "int_array" || lt == "str_array" || lt == "float_array"
+        rc = compile_expr(recv)
+        arg = compile_arg0(nid)
+        pfx = array_c_prefix(lt)
+        tmp = new_temp
+        itmp = new_temp
+        emit("  " + c_type(lt) + tmp + " = sp_" + pfx + "_dup(" + rc + ");")
+        emit("  for (mrb_int " + itmp + " = 0; " + itmp + " < sp_" + pfx + "_length(" + arg + "); " + itmp + "++)")
+        emit("    sp_" + pfx + "_push(" + tmp + ", sp_" + pfx + "_get(" + arg + ", " + itmp + "));")
+        return tmp
+      end
       return "(" + compile_expr(recv) + " + " + compile_arg0(nid) + ")"
     end
     if mname == "-"
@@ -14391,6 +14405,22 @@ class Compiler
       end
     end
 
+    # concat on array (mutating append)
+    if mname == "concat"
+      if recv >= 0
+        rt = infer_type(recv)
+        if rt == "int_array" || rt == "str_array" || rt == "float_array"
+          rc = compile_expr(recv)
+          arg = compile_arg0(nid)
+          pfx = array_c_prefix(rt)
+          tmp = new_temp
+          emit("  for (mrb_int " + tmp + " = 0; " + tmp + " < sp_" + pfx + "_length(" + arg + "); " + tmp + "++)")
+          emit("    sp_" + pfx + "_push(" + rc + ", sp_" + pfx + "_get(" + arg + ", " + tmp + "));")
+          return 1
+        end
+      end
+    end
+
     # replace on string (mutating reassign)
     if mname == "replace"
       if recv >= 0
@@ -17316,7 +17346,7 @@ class Compiler
     lt = @nd_type[last]
     if lt == "CallNode"
       lm = @nd_name[last]
-      if lm == "[]=" || lm == "push" || lm == "pop" || lm == "emit" || lm == "emit_raw" || lm == "puts" || lm == "print" || lm == "p" || lm == "printf" || lm == "warn" || lm == "raise" || lm == "exit" || lm == "delete" || lm == "clear" || lm == "reverse!" || lm == "sort!" || lm == "each" || lm == "times" || lm == "upto" || lm == "downto"
+      if lm == "[]=" || lm == "push" || lm == "pop" || lm == "emit" || lm == "emit_raw" || lm == "puts" || lm == "print" || lm == "p" || lm == "printf" || lm == "warn" || lm == "raise" || lm == "exit" || lm == "delete" || lm == "clear" || lm == "concat" || lm == "reverse!" || lm == "sort!" || lm == "each" || lm == "times" || lm == "upto" || lm == "downto"
         compile_stmt(last)
         if return_type != "void"
           emit("  return " + c_return_default(return_type) + ";")
