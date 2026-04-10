@@ -13,6 +13,7 @@
 #include <time.h>
 #include <setjmp.h>
 #include <ucontext.h>
+#include <unistd.h>
 
 typedef int64_t mrb_int;
 typedef double mrb_float;

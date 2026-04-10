@@ -10888,6 +10888,13 @@ class Compiler
       emit("  srand((unsigned)" + compile_arg0(nid) + ");")
       return "0"
     end
+    if mname == "sleep"
+      args_id = @nd_arguments[nid]
+      if args_id >= 0
+        emit("  sleep((unsigned)" + compile_arg0(nid) + ");")
+      end
+      return "0"
+    end
     if mname == "rand"
       args_id = @nd_arguments[nid]
       if args_id >= 0
@@ -17445,7 +17452,7 @@ class Compiler
     lt = @nd_type[last]
     if lt == "CallNode"
       lm = @nd_name[last]
-      if lm == "[]=" || lm == "push" || lm == "pop" || lm == "emit" || lm == "emit_raw" || lm == "puts" || lm == "print" || lm == "p" || lm == "printf" || lm == "warn" || lm == "raise" || lm == "exit" || lm == "delete" || lm == "clear" || lm == "concat" || lm == "reverse!" || lm == "sort!" || lm == "each" || lm == "times" || lm == "upto" || lm == "downto"
+      if lm == "[]=" || lm == "push" || lm == "pop" || lm == "emit" || lm == "emit_raw" || lm == "puts" || lm == "print" || lm == "p" || lm == "printf" || lm == "warn" || lm == "raise" || lm == "exit" || lm == "sleep" || lm == "delete" || lm == "clear" || lm == "concat" || lm == "reverse!" || lm == "sort!" || lm == "each" || lm == "times" || lm == "upto" || lm == "downto"
         compile_stmt(last)
         if return_type != "void"
           emit("  return " + c_return_default(return_type) + ";")
