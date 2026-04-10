@@ -9362,6 +9362,8 @@ class Compiler
                       # Index
                       types.push("int")
                     end
+                  elsif mname == "each_char" || mname == "each_line"
+                    types.push("string")
                   elsif mname == "each_slice" || mname == "each_cons"
                     # Block param is a sub-array of the same type
                     if recv_type == "str_array" || recv_type == "float_array" || recv_type == "int_array"
@@ -14748,6 +14750,64 @@ class Compiler
       if @nd_block[nid] >= 0
         compile_each_slice_block(nid)
         return 1
+      end
+    end
+
+    if mname == "each_char"
+      if @nd_block[nid] >= 0 && recv >= 0
+        rt = infer_type(recv)
+        if rt == "string" || rt == "mutable_str"
+          rc = compile_expr(recv)
+          bp = get_block_param(nid, 0)
+          if bp == ""
+            bp = "_c"
+          end
+          declare_var(bp, "string")
+          @needs_string_helpers = 1
+          tmp = new_temp
+          src = rc
+          if rt == "mutable_str"
+            src = rc + "->data"
+          end
+          src_tmp = new_temp
+          emit("  const char *" + src_tmp + " = " + src + ";")
+          emit("  for (mrb_int " + tmp + " = 0; " + src_tmp + "[" + tmp + "]; " + tmp + "++) {")
+          emit("    lv_" + bp + " = sp_str_sub_range(" + src_tmp + ", " + tmp + ", 1);")
+          @indent = @indent + 1
+          compile_stmts_body(@nd_body[@nd_block[nid]])
+          @indent = @indent - 1
+          emit("  }")
+          return 1
+        end
+      end
+    end
+
+    if mname == "each_line"
+      if @nd_block[nid] >= 0 && recv >= 0
+        rt = infer_type(recv)
+        if rt == "string" || rt == "mutable_str"
+          rc = compile_expr(recv)
+          bp = get_block_param(nid, 0)
+          if bp == ""
+            bp = "_l"
+          end
+          declare_var(bp, "string")
+          @needs_str_array = 1
+          tmp_arr = new_temp
+          tmp_i = new_temp
+          src = rc
+          if rt == "mutable_str"
+            src = rc + "->data"
+          end
+          emit("  sp_StrArray *" + tmp_arr + " = sp_str_split(" + src + ", \"\\n\");")
+          emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < " + tmp_arr + "->len; " + tmp_i + "++) {")
+          emit("    lv_" + bp + " = " + tmp_arr + "->data[" + tmp_i + "];")
+          @indent = @indent + 1
+          compile_stmts_body(@nd_body[@nd_block[nid]])
+          @indent = @indent - 1
+          emit("  }")
+          return 1
+        end
       end
     end
 
