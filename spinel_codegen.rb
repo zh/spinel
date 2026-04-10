@@ -1739,6 +1739,12 @@ class Compiler
       end
       return "int"
     end
+    if mname == "take" || mname == "drop"
+      if recv >= 0
+        return infer_type(recv)
+      end
+      return "int_array"
+    end
     if mname == "sort"
       if recv >= 0
         return infer_type(recv)
@@ -11948,6 +11954,26 @@ class Compiler
 
   def compile_array_method_expr(nid, mname, rc, recv_type)
     # Common array methods (all array types)
+    if mname == "take"
+      pfx = array_c_prefix(recv_type)
+      n = compile_arg0(nid)
+      tmp = new_temp
+      itmp = new_temp
+      emit("  " + c_type(recv_type) + tmp + " = sp_" + pfx + "_new();")
+      emit("  for (mrb_int " + itmp + " = 0; " + itmp + " < " + n + " && " + itmp + " < sp_" + pfx + "_length(" + rc + "); " + itmp + "++)")
+      emit("    sp_" + pfx + "_push(" + tmp + ", sp_" + pfx + "_get(" + rc + ", " + itmp + "));")
+      return tmp
+    end
+    if mname == "drop"
+      pfx = array_c_prefix(recv_type)
+      n = compile_arg0(nid)
+      tmp = new_temp
+      itmp = new_temp
+      emit("  " + c_type(recv_type) + tmp + " = sp_" + pfx + "_new();")
+      emit("  for (mrb_int " + itmp + " = " + n + "; " + itmp + " < sp_" + pfx + "_length(" + rc + "); " + itmp + "++)")
+      emit("    sp_" + pfx + "_push(" + tmp + ", sp_" + pfx + "_get(" + rc + ", " + itmp + "));")
+      return tmp
+    end
     if mname == "sample"
       pfx = array_c_prefix(recv_type)
       return "sp_" + pfx + "_get(" + rc + ", rand() % sp_" + pfx + "_length(" + rc + "))"
