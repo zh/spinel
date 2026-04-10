@@ -1635,6 +1635,9 @@ class Compiler
     if mname == "split"
       return "str_array"
     end
+    if mname == "lines"
+      return "str_array"
+    end
     if mname == "gsub"
       return "string"
     end
@@ -11636,6 +11639,10 @@ class Compiler
         end
       end
       return "sp_str_split(" + rc + ", " + compile_arg0(nid) + ")"
+    end
+    if mname == "lines"
+      @needs_str_array = 1
+      return "sp_str_split(" + rc + ", \"\\n\")"
     end
     if mname == "match?"
       re_args_id = @nd_arguments[nid]
