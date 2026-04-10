@@ -1715,6 +1715,9 @@ class Compiler
       end
       return "int"
     end
+    if mname == "digits"
+      return "int_array"
+    end
     if mname == "values"
       if recv >= 0
         rt = infer_type(recv)
@@ -11944,6 +11947,18 @@ class Compiler
     if mname == "to_s"
       @needs_string_helpers = 1
       return "sp_int_to_s(" + rc + ")"
+    end
+    if mname == "digits"
+      @needs_int_array = 1
+      @needs_gc = 1
+      base = "10"
+      if @nd_arguments[nid] >= 0
+        aargs = get_args(@nd_arguments[nid])
+        if aargs.length > 0
+          base = compile_expr(aargs[0])
+        end
+      end
+      return "sp_int_digits(" + rc + ", " + base + ")"
     end
     if mname == "to_i"
       return rc
