@@ -1641,6 +1641,9 @@ class Compiler
     if mname == "lines"
       return "str_array"
     end
+    if mname == "scan"
+      return "str_array"
+    end
     if mname == "gets"
       return "string"
     end
@@ -11748,6 +11751,22 @@ class Compiler
     if mname == "lines"
       @needs_str_array = 1
       return "sp_str_split(" + rc + ", \"\\n\")"
+    end
+    if mname == "scan"
+      if @nd_block[nid] < 0
+        args_id = @nd_arguments[nid]
+        if args_id >= 0
+          argl = get_args(args_id)
+          if argl.length > 0
+            ridx = find_regexp_index(argl[0])
+            if ridx >= 0
+              @needs_str_array = 1
+              @needs_regexp = 1
+              return "sp_re_scan(sp_re_pat_" + ridx.to_s + ", " + rc + ")"
+            end
+          end
+        end
+      end
     end
     if mname == "match?"
       re_args_id = @nd_arguments[nid]
