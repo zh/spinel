@@ -1736,6 +1736,9 @@ class Compiler
     if mname == "digits"
       return "int_array"
     end
+    if mname == "tally"
+      return "str_int_hash"
+    end
     if mname == "values"
       if recv >= 0
         rt = infer_type(recv)
@@ -12416,6 +12419,10 @@ class Compiler
       end
       if mname == "delete_at"
         return "sp_StrArray_delete_at(" + rc + ", " + compile_arg0(nid) + ")"
+      end
+      if mname == "tally"
+        @needs_str_int_hash = 1
+        return "sp_StrArray_tally(" + rc + ")"
       end
       if mname == "insert"
         args_id = @nd_arguments[nid]
