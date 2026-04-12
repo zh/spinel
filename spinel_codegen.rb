@@ -1892,10 +1892,16 @@ class Compiler
       end
       return "int"
     end
-    if mname == "min"
-      return "int"
-    end
-    if mname == "max"
+    if mname == "min" || mname == "max"
+      if recv >= 0
+        rt = infer_type(recv)
+        if rt == "str_array"
+          return "string"
+        end
+        if rt == "float_array"
+          return "float"
+        end
+      end
       return "int"
     end
     if mname == "sum"
@@ -9435,7 +9441,7 @@ class Compiler
                   end
                   if mname == "times" || mname == "upto" || mname == "downto"
                     types.push("int")
-                  elsif mname == "each" || mname == "each_pair" || mname == "map" || mname == "select" || mname == "filter" || mname == "reject" || mname == "find" || mname == "detect" || mname == "any?" || mname == "all?" || mname == "none?" || mname == "count" || mname == "min_by" || mname == "max_by" || mname == "sort_by" || mname == "flat_map" || mname == "filter_map"
+                  elsif mname == "each" || mname == "each_pair" || mname == "map" || mname == "select" || mname == "filter" || mname == "reject" || mname == "find" || mname == "detect" || mname == "any?" || mname == "all?" || mname == "none?" || mname == "one?" || mname == "count" || mname == "min" || mname == "max" || mname == "sum" || mname == "min_by" || mname == "max_by" || mname == "sort_by" || mname == "flat_map" || mname == "filter_map" || mname == "cycle"
                     # Element iteration: infer block param from collection type
                     if recv_type == "str_array"
                       types.push("string")
@@ -12356,6 +12362,12 @@ class Compiler
     end
     if mname == "filter_map" && @nd_block[nid] >= 0
       return compile_array_filter_map(nid, rc, recv_type)
+    end
+    if (mname == "sum") && @nd_block[nid] >= 0
+      return compile_array_sum_block(nid, rc, recv_type)
+    end
+    if (mname == "min" || mname == "max") && @nd_block[nid] >= 0
+      return compile_array_min_max_block(nid, rc, recv_type, mname)
     end
     # Array methods
     if recv_type == "int_array"
@@ -17006,6 +17018,87 @@ class Compiler
       end
     end
     "0"
+  end
+
+  def compile_array_sum_block(nid, rc, recv_type)
+    bp1 = get_block_param(nid, 0)
+    if bp1 == ""
+      bp1 = "_x"
+    end
+    elem_type = "int"
+    if recv_type == "str_array"
+      elem_type = "string"
+    elsif recv_type == "float_array"
+      elem_type = "float"
+    end
+    declare_var(bp1, elem_type)
+    pfx = array_c_prefix(recv_type)
+    tmp_sum = new_temp
+    tmp_i = new_temp
+    emit("  mrb_int " + tmp_sum + " = 0;")
+    emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_" + pfx + "_length(" + rc + "); " + tmp_i + "++) {")
+    emit("    lv_" + bp1 + " = sp_" + pfx + "_get(" + rc + ", " + tmp_i + ");")
+    blk = @nd_block[nid]
+    bexpr = "0"
+    if @nd_body[blk] >= 0
+      bs = get_stmts(@nd_body[blk])
+      if bs.length > 0
+        k = 0
+        while k < bs.length - 1
+          compile_stmt(bs[k])
+          k = k + 1
+        end
+        bexpr = compile_expr(bs.last)
+      end
+    end
+    emit("    " + tmp_sum + " += " + bexpr + ";")
+    emit("  }")
+    tmp_sum
+  end
+
+  def compile_array_min_max_block(nid, rc, recv_type, mname)
+    bp1 = get_block_param(nid, 0)
+    if bp1 == ""
+      bp1 = "_x"
+    end
+    elem_type = "int"
+    if recv_type == "str_array"
+      elem_type = "string"
+    elsif recv_type == "float_array"
+      elem_type = "float"
+    end
+    set_var_type(bp1, elem_type)
+    pfx = array_c_prefix(recv_type)
+    tmp_res = new_temp
+    tmp_key = new_temp
+    tmp_i = new_temp
+    bp_tmp = new_temp
+    emit("  " + c_type(elem_type) + " " + tmp_res + " = " + c_default_val(elem_type) + ";")
+    emit("  mrb_int " + tmp_key + " = 0;")
+    emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_" + pfx + "_length(" + rc + "); " + tmp_i + "++) {")
+    emit("    " + c_type(elem_type) + " " + bp_tmp + " = sp_" + pfx + "_get(" + rc + ", " + tmp_i + ");")
+    emit("    lv_" + bp1 + " = " + bp_tmp + ";")
+    blk = @nd_block[nid]
+    bexpr = "0"
+    if @nd_body[blk] >= 0
+      bs = get_stmts(@nd_body[blk])
+      if bs.length > 0
+        k = 0
+        while k < bs.length - 1
+          compile_stmt(bs[k])
+          k = k + 1
+        end
+        bexpr = compile_expr(bs.last)
+      end
+    end
+    cmp = ">"
+    if mname == "min"
+      cmp = "<"
+    end
+    emit("    mrb_int _k = " + bexpr + ";")
+    emit("    if (" + tmp_i + " == 0 || _k " + cmp + " " + tmp_key + ") { " + tmp_res + " = " + bp_tmp + "; " + tmp_key + " = _k; }")
+    emit("  }")
+    tmp_res
   end
 
   def compile_array_filter_map(nid, rc, recv_type)
