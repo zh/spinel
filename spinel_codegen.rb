@@ -1756,6 +1756,27 @@ class Compiler
       end
       return "int_array"
     end
+    if mname == "filter_map"
+      if recv >= 0
+        blk = @nd_block[nid]
+        if blk >= 0
+          bbody = @nd_body[blk]
+          if bbody >= 0
+            bbs = get_stmts(bbody)
+            if bbs.length > 0
+              bret = infer_type(bbs.last)
+              if bret == "string"
+                return "str_array"
+              end
+              if bret == "float"
+                return "float_array"
+              end
+            end
+          end
+        end
+      end
+      return "int_array"
+    end
     if mname == "find" || mname == "detect"
       if recv >= 0
         rt = infer_type(recv)
@@ -9414,7 +9435,7 @@ class Compiler
                   end
                   if mname == "times" || mname == "upto" || mname == "downto"
                     types.push("int")
-                  elsif mname == "each" || mname == "each_pair" || mname == "map" || mname == "select" || mname == "filter" || mname == "reject" || mname == "find" || mname == "detect" || mname == "any?" || mname == "all?" || mname == "none?" || mname == "count" || mname == "min_by" || mname == "max_by" || mname == "sort_by" || mname == "flat_map"
+                  elsif mname == "each" || mname == "each_pair" || mname == "map" || mname == "select" || mname == "filter" || mname == "reject" || mname == "find" || mname == "detect" || mname == "any?" || mname == "all?" || mname == "none?" || mname == "count" || mname == "min_by" || mname == "max_by" || mname == "sort_by" || mname == "flat_map" || mname == "filter_map"
                     # Element iteration: infer block param from collection type
                     if recv_type == "str_array"
                       types.push("string")
@@ -12332,6 +12353,9 @@ class Compiler
     end
     if (mname == "find" || mname == "detect") && @nd_block[nid] >= 0
       return compile_array_find_block(nid, rc, recv_type)
+    end
+    if mname == "filter_map" && @nd_block[nid] >= 0
+      return compile_array_filter_map(nid, rc, recv_type)
     end
     # Array methods
     if recv_type == "int_array"
@@ -16956,6 +16980,69 @@ class Compiler
       end
     end
     "0"
+  end
+
+  def compile_array_filter_map(nid, rc, recv_type)
+    bp1 = get_block_param(nid, 0)
+    if bp1 == ""
+      bp1 = "_x"
+    end
+    elem_type = "int"
+    if recv_type == "str_array"
+      elem_type = "string"
+    elsif recv_type == "float_array"
+      elem_type = "float"
+    end
+    declare_var(bp1, elem_type)
+    pfx_src = array_c_prefix(recv_type)
+    # Determine result type from block return
+    blk = @nd_block[nid]
+    block_ret = "int"
+    if blk >= 0
+      bbody = @nd_body[blk]
+      if bbody >= 0
+        bbs = get_stmts(bbody)
+        if bbs.length > 0
+          block_ret = infer_type(bbs.last)
+        end
+      end
+    end
+    if block_ret == "string"
+      result_type = "str_array"
+    elsif block_ret == "float"
+      result_type = "float_array"
+    else
+      result_type = "int_array"
+    end
+    pfx_dst = array_c_prefix(result_type)
+    @needs_gc = 1
+    tmp_arr = new_temp
+    tmp_i = new_temp
+    tmp_val = new_temp
+    emit("  " + c_type(result_type) + " " + tmp_arr + " = sp_" + pfx_dst + "_new();")
+    emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_" + pfx_src + "_length(" + rc + "); " + tmp_i + "++) {")
+    emit("    lv_" + bp1 + " = sp_" + pfx_src + "_get(" + rc + ", " + tmp_i + ");")
+    @indent = @indent + 1
+    bexpr = "0"
+    if blk >= 0
+      bbody2 = @nd_body[blk]
+      if bbody2 >= 0
+        bs = get_stmts(bbody2)
+        if bs.length > 0
+          k = 0
+          while k < bs.length - 1
+            compile_stmt(bs[k])
+            k = k + 1
+          end
+          bexpr = compile_expr(bs.last)
+        end
+      end
+    end
+    emit("  " + c_type(block_ret) + " " + tmp_val + " = " + bexpr + ";")
+    emit("  if (" + tmp_val + ") sp_" + pfx_dst + "_push(" + tmp_arr + ", " + tmp_val + ");")
+    @indent = @indent - 1
+    emit("  }")
+    tmp_arr
   end
 
   def compile_array_find_block(nid, rc, recv_type)
