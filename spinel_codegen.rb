@@ -12354,6 +12354,23 @@ class Compiler
       pfx = array_c_prefix(recv_type)
       return "(sp_" + pfx + "_length(" + rc + ") == 0)"
     end
+    if mname == "count" && @nd_arguments[nid] >= 0 && @nd_block[nid] < 0
+      # count(val) — count occurrences of a specific value
+      pfx = array_c_prefix(recv_type)
+      val = compile_arg0(nid)
+      tmp_c = new_temp
+      tmp_i = new_temp
+      if recv_type == "str_array"
+        emit("  mrb_int " + tmp_c + " = 0;")
+        emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_" + pfx + "_length(" + rc + "); " + tmp_i + "++)")
+        emit("    if (strcmp(sp_" + pfx + "_get(" + rc + ", " + tmp_i + "), " + val + ") == 0) " + tmp_c + "++;")
+      else
+        emit("  mrb_int " + tmp_c + " = 0;")
+        emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_" + pfx + "_length(" + rc + "); " + tmp_i + "++)")
+        emit("    if (sp_" + pfx + "_get(" + rc + ", " + tmp_i + ") == " + val + ") " + tmp_c + "++;")
+      end
+      return tmp_c
+    end
     if (mname == "any?" || mname == "all?" || mname == "none?" || mname == "one?") && @nd_block[nid] >= 0
       return compile_array_predicate_block(nid, rc, recv_type, mname)
     end
