@@ -12183,6 +12183,9 @@ class Compiler
     if mname == "hash"
       return "(mrb_int)sp_str_hash(" + rc + ")"
     end
+    if mname == "encode" || mname == "force_encoding" || mname == "b"
+      return rc
+    end
     if mname == "strip"
       return "sp_str_strip(" + rc + ")"
     end
