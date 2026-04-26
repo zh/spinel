@@ -57,3 +57,21 @@ puts sum          # 15
 
 # String#to_s on object
 puts p1.to_s      # (10, 4)
+
+# attr_accessor path should keep ivar/local namespaces distinct.
+class IvarCollision
+  attr_accessor :x, :iv_x
+
+  def initialize
+    @x = 1
+    @iv_x = 2
+  end
+
+  def sum
+    x = 10
+    iv_x = 20
+    @x + @iv_x + self.x + self.iv_x + x + iv_x
+  end
+end
+
+puts IvarCollision.new.sum   # 36

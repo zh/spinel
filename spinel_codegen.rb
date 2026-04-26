@@ -3314,12 +3314,11 @@ class Compiler
   end
 
   def sanitize_ivar(name)
-    if name.length > 0
-      if name[0] == "@"
-        return name[1, name.length - 1]
-      end
+    # @x → iv_x, x → iv_x
+    if name.length > 0 && name[0] == "@"
+      return "iv_" + name[1, name.length - 1]
     end
-    name
+    "iv_" + name
   end
 
   def sanitize_gvar(name)
@@ -9854,7 +9853,7 @@ class Compiler
           if @cls_is_value_type[ci] == 1
             sa = "."
           end
-          emit_raw("  self" + sa + pnames2[sk] + " = lv_" + pnames2[sk] + ";")
+          emit_raw("  self" + sa + sanitize_ivar(pnames2[sk]) + " = lv_" + pnames2[sk] + ";")
           sk = sk + 1
         end
       end
@@ -15422,7 +15421,7 @@ class Compiler
         j = 0
         while j < readers.length
           if readers[j] == mname
-            return rc + arrow + mname
+            return rc + arrow + sanitize_ivar(mname)
           end
           j = j + 1
         end
@@ -15434,7 +15433,7 @@ class Compiler
             j = 0
             while j < writers.length
               if writers[j] == bname
-                return "(" + rc + arrow + bname + " = " + compile_arg0(nid) + ", 0)"
+                return "(" + rc + arrow + sanitize_ivar(bname) + " = " + compile_arg0(nid) + ", 0)"
               end
               j = j + 1
             end
@@ -15490,7 +15489,7 @@ class Compiler
           j2 = j2 + 1
         end
         if found_reader == 1
-          return "((sp_" + cname2 + " *)" + rc + ")->" + mname
+          return "((sp_" + cname2 + " *)" + rc + ")->" + sanitize_ivar(mname)
         end
         # Check writers
         if mname.length > 1
@@ -15500,7 +15499,7 @@ class Compiler
             j2 = 0
             while j2 < writers2.length
               if writers2[j2] == bname2
-                return "(((sp_" + cname2 + " *)" + rc + ")->" + bname2 + " = " + compile_arg0(nid) + ")"
+                return "(((sp_" + cname2 + " *)" + rc + ")->" + sanitize_ivar(bname2) + " = " + compile_arg0(nid) + ")"
               end
               j2 = j2 + 1
             end
@@ -18236,7 +18235,7 @@ class Compiler
             if is_value_type_obj(rt) == 1
               arrow2 = "."
             end
-            emit("  " + rc + arrow2 + bname + " = " + compile_arg0(nid) + ";")
+            emit("  " + rc + arrow2 + sanitize_ivar(bname) + " = " + compile_arg0(nid) + ";")
             return 1
           end
         end
@@ -21654,7 +21653,17 @@ class Compiler
     @in_loop = 1
     # N.times.map { |i| ... } -> build int_array with block body; param = index
     recv = @nd_receiver[nid]
-    if recv >= 0 && @nd_type[recv] == "CallNode" && @nd_name[recv] == "times" && @nd_block[recv] < 0
+    times_recv = 0
+    if recv >= 0
+      if @nd_type[recv] == "CallNode"
+        if @nd_name[recv] == "times"
+          if @nd_block[recv] < 0
+            times_recv = 1
+          end
+        end
+      end
+    end
+    if times_recv == 1
       ncount = compile_expr(@nd_receiver[recv])
       bpn = get_block_param(nid, 0)
       tmp_arrn = new_temp
