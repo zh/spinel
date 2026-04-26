@@ -4124,6 +4124,9 @@ class Compiler
             if rname == "Hash"
               return "str_int_hash"
             end
+            if rname == "StringIO"
+              return "stringio"
+            end
             return "obj_" + rname
           end
         end
