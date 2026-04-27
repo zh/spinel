@@ -27,3 +27,14 @@ words.map { |w| w.upcase }.each { |w| puts w }   # ALPHA BETA GAMMA
 empty = "".split(",")
 e2 = empty.map { |s| s.upcase }
 puts e2.length            # 0
+
+# Block parameter is block-local: reusing the same name as an outer
+# differently-typed local must not leak. Issue #43 originally hit this
+# (3.times do |i| ... end then foo.map {|i| ...} where the times-block
+# had typed lv_i as mrb_int).
+rs = []
+3.times do |i|
+  rs << "row#{i}"
+end
+out = rs.map { |i| i.upcase }
+out.each { |line| puts line }   # ROW0 ROW1 ROW2

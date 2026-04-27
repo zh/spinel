@@ -20972,7 +20972,11 @@ class Compiler
         @needs_int_array = 1
         emit("  sp_IntArray *" + tmp_arr + " = sp_IntArray_new();")
         emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_StrArray_length(" + rc + "); " + tmp_i + "++) {")
-        emit("    lv_" + bp1 + " = sp_StrArray_get(" + rc + ", " + tmp_i + ");")
+        # Declare lv_<bp> with the block-local type inside the for body
+        # so it C-shadows any outer same-named local (Ruby block-local
+        # parameter scope: i in `foo.map { |i| ... }` is independent of
+        # any outer i).
+        emit("    const char *lv_" + bp1 + " = sp_StrArray_get(" + rc + ", " + tmp_i + ");")
         @indent = @indent + 1
         if blk >= 0
           body3 = @nd_body[blk]
@@ -20996,7 +21000,8 @@ class Compiler
       @needs_str_array = 1
       emit("  sp_StrArray *" + tmp_arr + " = sp_StrArray_new();")
       emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_StrArray_length(" + rc + "); " + tmp_i + "++) {")
-      emit("    lv_" + bp1 + " = sp_StrArray_get(" + rc + ", " + tmp_i + ");")
+      # Block-local C decl, see note in the int-block branch above.
+      emit("    const char *lv_" + bp1 + " = sp_StrArray_get(" + rc + ", " + tmp_i + ");")
       @indent = @indent + 1
       if blk >= 0
         body3 = @nd_body[blk]
