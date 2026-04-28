@@ -9359,6 +9359,30 @@ class Compiler
     ""
   end
 
+  def detect_ptr_array_stored_types
+    # Find object types `obj_<C>` that appear as the element type of an
+    # array literal. Such an array becomes a `sp_PtrArray *` whose
+    # `_push` takes `void *`; if `<C>` were optimized into a value type
+    # then `sp_<C>_new(...)` would return the struct by value and the
+    # generated push call would be a C type error.
+    @ptr_array_stored_types = "".split(",")
+    nid = 0
+    while nid < @nd_type.length
+      if @nd_type[nid] == "ArrayNode"
+        at = infer_array_elem_type(nid)
+        if is_ptr_array_type(at) == 1
+          obj_t = ptr_array_elem_type(at)
+          if is_obj_type(obj_t) == 1
+            if not_in(obj_t, @ptr_array_stored_types) == 1
+              @ptr_array_stored_types.push(obj_t)
+            end
+          end
+        end
+      end
+      nid = nid + 1
+    end
+  end
+
   def detect_param_mutated_types
     # Find classes whose instances are mutated when passed as method parameters
     @param_mutated_types = "".split(",")
@@ -9491,6 +9515,7 @@ class Compiler
     auto_register_attr_readers
     auto_register_attr_writers
     detect_param_mutated_types
+    detect_ptr_array_stored_types
     # Multiple passes: value type detection depends on other classes
     2.times do
       i = 0
@@ -9542,6 +9567,20 @@ class Compiler
                 all_val = 0
               end
               pmi = pmi + 1
+            end
+          end
+          # Exclude classes whose instances are pushed into a ptr_array
+          # (array literal of `obj_<C>` becomes a `sp_PtrArray *` whose
+          # `_push` takes `void *`; a value-type return from `Foo.new`
+          # is a struct by value and can't be passed through `void *`).
+          if all_val == 1
+            type_str = "obj_" + @cls_names[i]
+            psi = 0
+            while psi < @ptr_array_stored_types.length
+              if @ptr_array_stored_types[psi] == type_str
+                all_val = 0
+              end
+              psi = psi + 1
             end
           end
           if all_val == 1
