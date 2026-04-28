@@ -3257,6 +3257,30 @@ class Compiler
     0
   end
 
+  # True when class `ci` (or any of its parents) has registered `bname` as
+  # an attr_writer / attr_accessor or a struct field — i.e. `obj.bname = v`
+  # may safely become a direct field write.
+  def cls_has_attr_writer(ci, bname)
+    if ci < 0
+      return 0
+    end
+    writers = @cls_attr_writers[ci].split(";")
+    wi = 0
+    while wi < writers.length
+      if writers[wi] == bname
+        return 1
+      end
+      wi = wi + 1
+    end
+    if @cls_parents[ci] != ""
+      pi = find_class_idx(@cls_parents[ci])
+      if pi >= 0
+        return cls_has_attr_writer(pi, bname)
+      end
+    end
+    0
+  end
+
   def is_value_type_obj(t)
     if is_obj_type(t) == 1
       cname = t[4, t.length - 4]
@@ -19392,20 +19416,31 @@ class Compiler
   end
 
   def compile_writer_and_block_call_stmt(nid, mname, recv)
-    # attr_writer: obj.x = val
+    # attr_writer: obj.x = val — only short-circuit to a direct field
+    # write when `x=` is actually a registered attr_writer on the class
+    # (or transitive parent). Otherwise fall through to method-call
+    # dispatch so a real `def x=(v)` method gets called.
     if recv >= 0
       if mname.length > 1
         if mname[mname.length - 1] == "="
           bname = mname[0, mname.length - 1]
           rt = infer_type(recv)
           if is_obj_type(rt) == 1
-            rc = compile_expr_gc_rooted(recv)
-            arrow2 = "->"
-            if is_value_type_obj(rt) == 1
-              arrow2 = "."
+            r_cname = rt[4, rt.length - 4]
+            r_ci = find_class_idx(r_cname)
+            is_writer = 0
+            if r_ci >= 0
+              is_writer = cls_has_attr_writer(r_ci, bname)
             end
-            emit("  " + rc + arrow2 + sanitize_ivar(bname) + " = " + compile_arg0(nid) + ";")
-            return 1
+            if is_writer == 1
+              rc = compile_expr_gc_rooted(recv)
+              arrow2 = "->"
+              if is_value_type_obj(rt) == 1
+                arrow2 = "."
+              end
+              emit("  " + rc + arrow2 + sanitize_ivar(bname) + " = " + compile_arg0(nid) + ";")
+              return 1
+            end
           end
         end
       end
