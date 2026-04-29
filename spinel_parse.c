@@ -697,6 +697,10 @@ static int flatten(pm_node_t *node) {
     pm_regular_expression_node_t *n = (pm_regular_expression_node_t *)node;
     N("RegularExpressionNode");
     S("unescaped", escape_pm_string(&n->unescaped));
+    /* Emit Prism's regex flags so the codegen can pass /i, /x, /m
+       through to the engine. PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE=4,
+       _EXTENDED=8, _MULTI_LINE=16. */
+    I("flags", n->base.flags);
     break;
   }
   case PM_NUMBERED_REFERENCE_READ_NODE: {

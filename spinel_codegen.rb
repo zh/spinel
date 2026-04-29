@@ -188,6 +188,13 @@ class Compiler
     @needs_rand = 0
     @regexp_patterns = "".split(",")
     @regexp_flags = "".split(",")
+    # `var = /lit/` resolution. Parallel arrays: `@local_regex_names`
+    # holds the local-variable name and `@local_regex_idx` holds the
+    # corresponding `@regexp_patterns` index, or -1 when the same name
+    # has any other (non-regex or different-regex) write anywhere in
+    # the program — in which case the dispatcher must fall through.
+    @local_regex_names = "".split(",")
+    @local_regex_idx = []
 
     # Cache for parse_id_list: AST list fields never change once loaded,
     # so the parsed IntArray can be shared across callers. The `[[0]]`
@@ -926,6 +933,19 @@ class Compiler
             return find_regexp_index(eid)
           end
         end
+      end
+    end
+    # A local variable with exactly one write to a regex literal is
+    # also resolvable. Multi-write or non-regex-write names were
+    # marked ambiguous (-1) by scan_features.
+    if @nd_type[nid] == "LocalVariableReadNode"
+      lname = @nd_name[nid]
+      i = 0
+      while i < @local_regex_names.length
+        if @local_regex_names[i] == lname
+          return @local_regex_idx[i]
+        end
+        i = i + 1
       end
     end
     -1
@@ -7077,10 +7097,14 @@ class Compiler
       if @nd_flags[nid] != 0
         f = @nd_flags[nid]
         parts = "".split(",")
-        if f & 1 != 0
+        # Prism flag bits → engine `RE_FLAG_*` values (see re_internal.h).
+        # Prism: IGNORE_CASE=4, EXTENDED=8, MULTI_LINE=16.
+        # Engine: IGNORECASE=1, MULTILINE=2, DOTALL=4, EXTENDED=8.
+        # Ruby's /m (dot-matches-newline) maps to MULTILINE|DOTALL = 6.
+        if f & 4 != 0
           parts.push("1")
         end
-        if f & 2 != 0
+        if f & 16 != 0
           parts.push("6")
         end
         if f & 8 != 0
@@ -7090,8 +7114,59 @@ class Compiler
           flags = parts.join("|")
         end
       end
-      @regexp_patterns.push(pat)
-      @regexp_flags.push(flags)
+      # Idempotent: identical patterns share the same compiled global,
+      # so a second visit (e.g. via the LocalVariableWriteNode pre-scan
+      # below) is a no-op.
+      already = 0
+      ri0 = 0
+      while ri0 < @regexp_patterns.length
+        if @regexp_patterns[ri0] == pat
+          already = 1
+        end
+        ri0 = ri0 + 1
+      end
+      if already == 0
+        @regexp_patterns.push(pat)
+        @regexp_flags.push(flags)
+      end
+    end
+    # Track `var = /lit/` so a regex held in a local can be dispatched
+    # by find_regexp_index. A name with multiple writes (any kind, any
+    # regex literal) is marked ambiguous (-1) and falls through.
+    if t == "LocalVariableWriteNode"
+      lname = @nd_name[nid]
+      vid = @nd_expression[nid]
+      this_idx = -1
+      if vid >= 0 && @nd_type[vid] == "RegularExpressionNode"
+        # Register the pattern up front (the recursive scan after this
+        # block would do it too, but we need the index now to record
+        # the local-name → pattern mapping).
+        scan_features(vid)
+        rpat = @nd_unescaped[vid]
+        ri = 0
+        while ri < @regexp_patterns.length
+          if @regexp_patterns[ri] == rpat
+            this_idx = ri
+          end
+          ri = ri + 1
+        end
+      end
+      i2 = 0
+      found = 0
+      while i2 < @local_regex_names.length
+        if @local_regex_names[i2] == lname
+          found = 1
+          # Any second write (regex or not) marks ambiguous.
+          if @local_regex_idx[i2] != this_idx
+            @local_regex_idx[i2] = -1
+          end
+        end
+        i2 = i2 + 1
+      end
+      if found == 0
+        @local_regex_names.push(lname)
+        @local_regex_idx.push(this_idx)
+      end
     end
     if t == "XStringNode"
       @needs_file_io = 1
