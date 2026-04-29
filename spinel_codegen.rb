@@ -3174,6 +3174,19 @@ class Compiler
     "int"
   end
 
+  def is_splat_with_target(nid)
+    if nid < 0
+      return 0
+    end
+    if @nd_type[nid] != "SplatNode"
+      return 0
+    end
+    if @nd_expression[nid] < 0
+      return 0
+    end
+    1
+  end
+
   def type_is_pointer(t)
     if is_nullable_type(t) == 1
       t = base_type(t)
@@ -5145,11 +5158,38 @@ class Compiler
                   ek = ek + 1
                 end
               else
-                at = infer_type(arg_ids[ak])
-                if ak < ptypes.length
-                  if ptypes[ak] == "int"
-                    if at != "int"
-                      ptypes[ak] = at
+                # SplatNode: treat the splat source's element type as
+                # contributing to *every* fixed param from `ak` up to the
+                # last non-rest one. So `foo(*strs)` correctly infers a
+                # str-typed first param even though the call site has
+                # only a single SplatNode arg.
+                if @nd_type[arg_ids[ak]] == "SplatNode"
+                  splat_src_for_inf = @nd_expression[arg_ids[ak]]
+                  if splat_src_for_inf >= 0
+                    splat_t_for_inf = infer_type(splat_src_for_inf)
+                    elem_t_for_inf = elem_type_of_array(splat_t_for_inf)
+                    if elem_t_for_inf != "int" && elem_t_for_inf != ""
+                      pi3 = ak
+                      while pi3 < ptypes.length
+                        # Don't clobber the trailing rest int_array param.
+                        if pi3 == ptypes.length - 1 && ptypes[pi3] == "int_array"
+                          pi3 = pi3 + 1
+                          next
+                        end
+                        if ptypes[pi3] == "int"
+                          ptypes[pi3] = elem_t_for_inf
+                        end
+                        pi3 = pi3 + 1
+                      end
+                    end
+                  end
+                else
+                  at = infer_type(arg_ids[ak])
+                  if ak < ptypes.length
+                    if ptypes[ak] == "int"
+                      if at != "int"
+                        ptypes[ak] = at
+                      end
                     end
                   end
                 end
@@ -17063,6 +17103,255 @@ class Compiler
     "sp_box_int(" + val + ")"
   end
 
+  # Emit a runtime loop that pushes every element of the array `src_expr`
+  # (a node id whose value is some typed array) onto the destination
+  # int_array variable `dst`. Used when expanding `*args` into a rest
+  # parameter that will be received as sp_IntArray *.
+  def emit_splat_into_int_array(dst, src_expr)
+    src_t = infer_type(src_expr)
+    src_v = compile_expr(src_expr)
+    @needs_int_array = 1
+    @needs_gc = 1
+    if src_t == "int_array" || src_t == "sym_array"
+      i = new_temp
+      emit("  for (mrb_int " + i + " = 0; " + i + " < sp_IntArray_length(" + src_v + "); " + i + "++) sp_IntArray_push(" + dst + ", sp_IntArray_get(" + src_v + ", " + i + "));")
+      return
+    end
+    if src_t == "str_array"
+      @needs_str_array = 1
+      i = new_temp
+      emit("  for (mrb_int " + i + " = 0; " + i + " < sp_StrArray_length(" + src_v + "); " + i + "++) sp_IntArray_push(" + dst + ", (mrb_int)sp_StrArray_get(" + src_v + ", " + i + "));")
+      return
+    end
+    if src_t == "float_array"
+      @needs_float_array = 1
+      i = new_temp
+      emit("  for (mrb_int " + i + " = 0; " + i + " < sp_FloatArray_length(" + src_v + "); " + i + "++) sp_IntArray_push(" + dst + ", (mrb_int)sp_FloatArray_get(" + src_v + ", " + i + "));")
+      return
+    end
+    if is_ptr_array_type(src_t) == 1
+      @needs_ptr_array = 1
+      i = new_temp
+      emit("  for (mrb_int " + i + " = 0; " + i + " < sp_PtrArray_length(" + src_v + "); " + i + "++) sp_IntArray_push(" + dst + ", (mrb_int)(intptr_t)sp_PtrArray_get(" + src_v + ", " + i + "));")
+      return
+    end
+    if src_t == "poly_array"
+      @needs_poly_array = 1
+      i = new_temp
+      emit("  for (mrb_int " + i + " = 0; " + i + " < sp_PolyArray_length(" + src_v + "); " + i + "++) sp_IntArray_push(" + dst + ", sp_PolyArray_get(" + src_v + ", " + i + ").v.i);")
+      return
+    end
+    # Fallback: treat the single value as one element.
+    emit("  sp_IntArray_push(" + dst + ", (mrb_int)" + src_v + ");")
+  end
+
+  # Read an element of a typed array as an mrb_int (so it fits int param
+  # slots and the int_array rest bundle uniformly).
+  def array_get_as_int_expr(src_t, src_v, idx_expr)
+    if src_t == "int_array" || src_t == "sym_array"
+      return "sp_IntArray_get(" + src_v + ", " + idx_expr + ")"
+    end
+    if src_t == "str_array"
+      return "(mrb_int)sp_StrArray_get(" + src_v + ", " + idx_expr + ")"
+    end
+    if src_t == "float_array"
+      return "(mrb_int)sp_FloatArray_get(" + src_v + ", " + idx_expr + ")"
+    end
+    if is_ptr_array_type(src_t) == 1
+      return "(mrb_int)(intptr_t)sp_PtrArray_get(" + src_v + ", " + idx_expr + ")"
+    end
+    if src_t == "poly_array"
+      # Pull the int channel out of the tagged union. Lossy for non-int
+      # tags — Spinel's *rest can only hold mrb_int today, so any non-int
+      # element splatted into a rest param prints as raw bits.
+      return "sp_PolyArray_get(" + src_v + ", " + idx_expr + ").v.i"
+    end
+    "0"
+  end
+
+  # Same as array_get_as_int_expr but returns the element in its native
+  # C type (used when the param slot is typed, e.g. const char *).
+  def array_get_native_expr(src_t, src_v, idx_expr)
+    if src_t == "int_array" || src_t == "sym_array"
+      return "sp_IntArray_get(" + src_v + ", " + idx_expr + ")"
+    end
+    if src_t == "str_array"
+      return "sp_StrArray_get(" + src_v + ", " + idx_expr + ")"
+    end
+    if src_t == "float_array"
+      return "sp_FloatArray_get(" + src_v + ", " + idx_expr + ")"
+    end
+    if is_ptr_array_type(src_t) == 1
+      return "sp_PtrArray_get(" + src_v + ", " + idx_expr + ")"
+    end
+    "0"
+  end
+
+  # Splat-aware companion to compile_call_args_with_defaults. Handles a
+  # single SplatNode in positional args. The conceptual positional list
+  # is (prefix... ++ splat_array ++ suffix...); fixed params eat from the
+  # left; the rest param (if any) gets the remainder.
+  def compile_call_args_splat(nid, mi, pnames, ptypes, defaults, kw_names, kw_vals, positional_ids, splat_idx)
+    splat_node = positional_ids[splat_idx]
+    splat_src_id = @nd_expression[splat_node]
+    prefix_count = splat_idx
+    suffix_count = positional_ids.length - splat_idx - 1
+
+    # Pre-evaluate the splat source so we can index it twice (length and
+    # element access) without re-evaluating side effects.
+    src_t = "int_array"
+    src_v = "0"
+    if splat_src_id >= 0
+      src_t = infer_type(splat_src_id)
+      @needs_gc = 1
+      src_tmp = new_temp
+      emit("  " + c_type(src_t) + " " + src_tmp + " = " + compile_expr(splat_src_id) + ";")
+      if type_is_pointer(src_t) == 1
+        emit("  SP_GC_ROOT(" + src_tmp + ");")
+      end
+      src_v = src_tmp
+    end
+    src_len_expr = length_c_expr(src_t, src_v)
+    if src_len_expr == ""
+      src_len_expr = "0"
+    end
+
+    # Identify if the last param is a rest int_array.
+    method_has_rest = 0
+    if pnames.length > 0
+      if ptypes[pnames.length - 1] == "int_array"
+        method_has_rest = 1
+      end
+    end
+    n_fixed = pnames.length
+    if method_has_rest == 1
+      n_fixed = pnames.length - 1
+    end
+
+    result = ""
+    k = 0
+    while k < pnames.length
+      if k > 0
+        result = result + ", "
+      end
+
+      # Keyword args take priority (matches non-splat path).
+      kw_found = 0
+      ki = 0
+      while ki < kw_names.length
+        if kw_names[ki] == pnames[k]
+          kw_found = 1
+          if k < ptypes.length && ptypes[k] == "poly"
+            result = result + "sp_box_str(" + kw_vals[ki] + ")"
+          else
+            result = result + kw_vals[ki]
+          end
+        end
+        ki = ki + 1
+      end
+      if kw_found == 1
+        k = k + 1
+        next
+      end
+
+      # Rest param: bundle leftover splat elements + suffix positionals.
+      if k == pnames.length - 1 && method_has_rest == 1
+        @needs_int_array = 1
+        @needs_gc = 1
+        rest_tmp = new_temp
+        emit("  sp_IntArray *" + rest_tmp + " = sp_IntArray_new();")
+        # Prefix positionals beyond n_fixed overflow into the rest before
+        # any splat content (e.g. take(1, 2, *xs) where take has only a
+        # *rest param: the literals 1 and 2 must lead the bundle).
+        po_start = n_fixed
+        if po_start < 0
+          po_start = 0
+        end
+        if po_start < prefix_count
+          poi = po_start
+          while poi < prefix_count
+            emit("  sp_IntArray_push(" + rest_tmp + ", (mrb_int)" + compile_expr(positional_ids[poi]) + ");")
+            poi = poi + 1
+          end
+        end
+        consumed = n_fixed - prefix_count
+        if consumed < 0
+          consumed = 0
+        end
+        i_loop = new_temp
+        emit("  for (mrb_int " + i_loop + " = " + consumed.to_s + "; " + i_loop + " < " + src_len_expr + "; " + i_loop + "++) sp_IntArray_push(" + rest_tmp + ", " + array_get_as_int_expr(src_t, src_v, i_loop) + ");")
+        si = 0
+        while si < suffix_count
+          pid = positional_ids[splat_idx + 1 + si]
+          emit("  sp_IntArray_push(" + rest_tmp + ", (mrb_int)" + compile_expr(pid) + ");")
+          si = si + 1
+        end
+        result = result + rest_tmp
+        k = k + 1
+        next
+      end
+
+      # Fixed param. Determine which conceptual positional it consumes.
+      pt = "int"
+      if k < ptypes.length
+        pt = ptypes[k]
+      end
+      if k < prefix_count
+        if pt == "poly"
+          result = result + box_expr_to_poly(positional_ids[k])
+        else
+          result = result + compile_expr(positional_ids[k])
+        end
+        k = k + 1
+        next
+      end
+      # Index into the splat source.
+      idx_in_splat = k - prefix_count
+      # Unconsumed splat elements available for fixed params:
+      #   src_len - (positional slots after the splat that need to come
+      #              from the splat to feed remaining fixed params)
+      # We don't know src_len statically, so we trust the caller has
+      # provided enough — a runtime over-read returns 0/NULL via the
+      # array's bounds clamp.
+      slots_left_for_splat = n_fixed - prefix_count
+      if idx_in_splat < slots_left_for_splat
+        ge = array_get_native_expr(src_t, src_v, idx_in_splat.to_s)
+        if pt == "poly"
+          # The splat element itself isn't a node id, so wrap manually.
+          result = result + ge
+        else
+          result = result + ge
+        end
+        k = k + 1
+        next
+      end
+      # Comes from a suffix positional (after the splat).
+      suffix_offset = idx_in_splat - slots_left_for_splat
+      pid_idx = splat_idx + 1 + suffix_offset
+      if pid_idx < positional_ids.length
+        if pt == "poly"
+          result = result + box_expr_to_poly(positional_ids[pid_idx])
+        else
+          result = result + compile_expr(positional_ids[pid_idx])
+        end
+      else
+        # Fall back to default if defined.
+        if k < defaults.length
+          def_id = defaults[k].to_i
+          if def_id >= 0
+            result = result + compile_expr(def_id)
+          else
+            result = result + "0"
+          end
+        else
+          result = result + "0"
+        end
+      end
+      k = k + 1
+    end
+    result
+  end
+
   def compile_call_args_with_defaults(nid, mi)
     args_id = @nd_arguments[nid]
     arg_ids = []
@@ -17077,6 +17366,8 @@ class Compiler
     kw_names = "".split(",")
     kw_vals = "".split(",")
     positional_ids = []
+    splat_idx = -1
+    splat_count_local = 0
     ak = 0
     while ak < arg_ids.length
       if @nd_type[arg_ids[ak]] == "KeywordHashNode"
@@ -17097,9 +17388,19 @@ class Compiler
           ek = ek + 1
         end
       else
+        if @nd_type[arg_ids[ak]] == "SplatNode"
+          if splat_idx < 0
+            splat_idx = positional_ids.length
+          end
+          splat_count_local = splat_count_local + 1
+        end
         positional_ids.push(arg_ids[ak])
       end
       ak = ak + 1
+    end
+
+    if splat_count_local == 1
+      return compile_call_args_splat(nid, mi, pnames, ptypes, defaults, kw_names, kw_vals, positional_ids, splat_idx)
     end
 
     result = ""
@@ -17131,16 +17432,61 @@ class Compiler
       if kw_found == 0
         if k < ptypes.length
           if ptypes[k] == "int_array"
-            # Only splat if there are more positional args than total params
-            # (i.e., this is a rest/splat parameter, not a regular array param)
-            if positional_ids.length > pnames.length
+            # Rest parameter (splat). Trigger when caller passes more
+            # positional args than the method has params, OR when any
+            # positional arg is itself a SplatNode that we have to expand.
+            has_splat_arg = 0
+            si = k
+            while si < positional_ids.length
+              if @nd_type[positional_ids[si]] == "SplatNode"
+                has_splat_arg = 1
+              end
+              si = si + 1
+            end
+            # Treat the last param as a rest target when it's the trailing
+            # int_array slot. This covers three cases:
+            #   - extra positional args spilling in (the original heuristic)
+            #   - a SplatNode somewhere in the args
+            #   - no args supplied at all (rest-only method called bare)
+            is_last_param = 0
+            if k == pnames.length - 1
+              is_last_param = 1
+            end
+            treat_as_rest = 0
+            if positional_ids.length > pnames.length || has_splat_arg == 1
+              treat_as_rest = 1
+            end
+            if is_last_param == 1 && positional_ids.length <= k
+              treat_as_rest = 1
+            end
+            if treat_as_rest == 1
+              # Fast path: the only positional is a splat whose source is
+              # already an int_array. Pass it directly without copying.
+              if has_splat_arg == 1 && positional_ids.length == k + 1 && @nd_type[positional_ids[k]] == "SplatNode"
+                src_expr = @nd_expression[positional_ids[k]]
+                if src_expr >= 0
+                  src_t = infer_type(src_expr)
+                  if src_t == "int_array" || src_t == "sym_array"
+                    result = result + compile_expr(src_expr)
+                    k = k + 1
+                    next
+                  end
+                end
+              end
               @needs_int_array = 1
               @needs_gc = 1
               tmp = new_temp
               emit("  sp_IntArray *" + tmp + " = sp_IntArray_new();")
-              pi = 0
+              pi = k
               while pi < positional_ids.length
-                emit("  sp_IntArray_push(" + tmp + ", " + compile_expr(positional_ids[pi]) + ");")
+                if @nd_type[positional_ids[pi]] == "SplatNode"
+                  src_expr2 = @nd_expression[positional_ids[pi]]
+                  if src_expr2 >= 0
+                    emit_splat_into_int_array(tmp, src_expr2)
+                  end
+                else
+                  emit("  sp_IntArray_push(" + tmp + ", (mrb_int)" + compile_expr(positional_ids[pi]) + ");")
+                end
                 pi = pi + 1
               end
               result = result + tmp
@@ -18210,6 +18556,9 @@ class Compiler
     end
     if is_ptr_array_type(rt) == 1
       return "sp_PtrArray_length(" + rc + ")"
+    end
+    if rt == "poly_array"
+      return "sp_PolyArray_length(" + rc + ")"
     end
     if rt == "str_int_hash"
       return "sp_StrIntHash_length(" + rc + ")"
