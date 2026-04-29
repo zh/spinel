@@ -6313,6 +6313,12 @@ class Compiler
                   @needs_sym_int_hash = 1
                 elsif promoted == "sym_str_hash"
                   @needs_sym_str_hash = 1
+                elsif promoted == "str_poly_hash"
+                  @needs_str_poly_hash = 1
+                  @needs_rb_value = 1
+                elsif promoted == "sym_poly_hash"
+                  @needs_sym_poly_hash = 1
+                  @needs_rb_value = 1
                 end
               end
             end
@@ -10846,6 +10852,12 @@ class Compiler
               elsif ivt == "sym_str_hash"
                 @needs_sym_str_hash = 1
                 iv_ctor = "sp_SymStrHash_new()"
+              elsif ivt == "str_poly_hash"
+                @needs_str_poly_hash = 1
+                iv_ctor = "sp_StrPolyHash_new()"
+              elsif ivt == "sym_poly_hash"
+                @needs_sym_poly_hash = 1
+                iv_ctor = "sp_SymPolyHash_new()"
               end
             end
             if iv_ctor != ""
@@ -17333,6 +17345,9 @@ class Compiler
     if is_ptr_array_type(at) == 1
       return "sp_box_ptr_array(" + val + ")"
     end
+    if at == "proc" || at == "lambda"
+      return "sp_box_proc(" + val + ")"
+    end
     if is_obj_type(at) == 1
       cname = at[4, at.length - 4]
       ci = find_class_idx(cname)
@@ -17386,6 +17401,9 @@ class Compiler
     end
     if is_ptr_array_type(at) == 1
       return "sp_box_ptr_array(" + val + ")"
+    end
+    if at == "proc" || at == "lambda"
+      return "sp_box_proc(" + val + ")"
     end
     "sp_box_int(" + val + ")"
   end
@@ -18656,6 +18674,12 @@ class Compiler
         elsif ivt == "sym_str_hash"
           @needs_sym_str_hash = 1
           ctor = "sp_SymStrHash_new()"
+        elsif ivt == "str_poly_hash"
+          @needs_str_poly_hash = 1
+          ctor = "sp_StrPolyHash_new()"
+        elsif ivt == "sym_poly_hash"
+          @needs_sym_poly_hash = 1
+          ctor = "sp_SymPolyHash_new()"
         end
         if ctor != ""
           @needs_gc = 1
