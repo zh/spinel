@@ -698,11 +698,53 @@ class Compiler
   end
 
   # Returns 1 if @nd_block[nid] is a literal BlockNode (do/end body),
-  # 0 otherwise. Used by &block-forwarding call sites to decide
-  # whether to emit a proc literal for the trailing block slot.
+  # 0 otherwise. Pairs with find_block_arg to dispatch correctly at
+  # &block-forwarding call sites (literal block vs. `&proc_var`).
   def has_literal_block(nid)
     blk = @nd_block[nid]
     (blk >= 0 && @nd_type[blk] == "BlockNode") ? 1 : 0
+  end
+
+  # Returns the inner expression of a BlockArgumentNode whose payload
+  # is a captured proc local (the `&block` form). Returns -1 for
+  # absent block-arg, or for shapes the codegen doesn't yet forward
+  # — `&:sym` (SymbolNode) and `&nil` (NilNode), which would need
+  # symbol-to-proc / nil-as-no-block lowering. Call sites fall
+  # through to the no-block path in those cases.
+  def find_block_arg(nid)
+    blk = @nd_block[nid]
+    if blk < 0
+      return -1
+    end
+    if @nd_type[blk] != "BlockArgumentNode"
+      return -1
+    end
+    inner = @nd_expression[blk]
+    if inner < 0
+      return -1
+    end
+    if @nd_type[inner] != "LocalVariableReadNode"
+      return -1
+    end
+    inner
+  end
+
+  # Resolves the call-site block-forwarding expression: returns the C
+  # expression for the proc to forward at a `&block`-taking call site
+  # (a literal block compiles to sp_proc_new(...); a `&proc_var` is
+  # the captured `sp_Proc *` local), or "" if the call site provides
+  # no block. Sets @needs_proc when a forwarded proc is emitted.
+  def block_forward_expr(nid)
+    if has_literal_block(nid) == 1
+      @needs_proc = 1
+      return compile_proc_literal(nid)
+    end
+    ba = find_block_arg(nid)
+    if ba >= 0
+      @needs_proc = 1
+      return compile_expr(ba)
+    end
+    ""
   end
 
   # Flatten a constant reference into an internal name.
@@ -13550,20 +13592,25 @@ class Compiler
       if @meth_has_yield[mi] == 1
         yargs = ", NULL, NULL"
       end
-      # Check if function has a &block param and caller provides a block
+      # Check if function has a &block param and caller provides a block.
+      # Ruby syntax requires `&block` to be the trailing param — a proc-typed
+      # slot in any other position is a positional proc argument, not a block
+      # param. Mirrors cls_method_has_block_param.
       ptypes = @meth_param_types[mi].split(",")
-      has_block_param = 0
-      pk = 0
-      while pk < ptypes.length
-        if ptypes[pk] == "proc"
-          has_block_param = 1
-        end
-        pk = pk + 1
-      end
+      has_block_param = (ptypes.length > 0 && ptypes.last == "proc") ? 1 : 0
       if has_block_param == 1
-        if @nd_block[nid] >= 0
-          block_proc = compile_proc_literal(nid)
-          return "sp_" + sanitize_name(mname) + "(" + compile_call_args(nid) + ", " + block_proc + ")"
+        # Forward the call site's literal block or `&proc_var` into the
+        # callee's &block slot. Use compile_call_args_with_defaults so
+        # optional positional params get their defaults filled in, and
+        # pass omit_trailing=1 so the &block slot isn't default-padded
+        # with "0" — we append the actual proc explicitly below.
+        block_proc = block_forward_expr(nid)
+        if block_proc != ""
+          ca = compile_call_args_with_defaults(nid, mi, 1)
+          if ca == ""
+            return "sp_" + sanitize_name(mname) + "(" + block_proc + ")"
+          end
+          return "sp_" + sanitize_name(mname) + "(" + ca + ", " + block_proc + ")"
         end
       end
       return "sp_" + sanitize_name(mname) + "(" + compile_call_args_with_defaults(nid, mi) + yargs + ")"
@@ -13655,9 +13702,8 @@ class Compiler
         end
         bp = ""
         if has_proc == 1
-          if has_literal_block(nid) == 1
-            bp = compile_proc_literal(nid)
-          else
+          bp = block_forward_expr(nid)
+          if bp == ""
             # The callee declares &block but the call site provides
             # none — fill the slot with NULL so the C call has the
             # right arity.
@@ -16509,13 +16555,11 @@ class Compiler
           end
           bp = ""
           if has_proc == 1
-            if has_literal_block(nid) == 1
-              bp = compile_proc_literal(nid)
-            else
+            bp = block_forward_expr(nid)
+            if bp == ""
               # The callee declares &block but the call site provides
               # none — fill the slot with NULL so the C call has the
-              # right arity (compile_typed_call_args has already been
-              # told to skip default-padding for this slot).
+              # right arity.
               bp = "0"
             end
           end
@@ -17139,7 +17183,11 @@ class Compiler
     result
   end
 
-  def compile_call_args_with_defaults(nid, mi)
+  def compile_call_args_with_defaults(nid, mi, omit_trailing = 0)
+    # `omit_trailing` is the number of trailing param slots to leave out
+    # entirely — block-forwarding call sites pass 1 so the &block slot
+    # isn't default-padded with "0" (the actual proc is appended by the
+    # caller after this returns).
     args_id = @nd_arguments[nid]
     arg_ids = []
     if args_id >= 0
@@ -17148,6 +17196,19 @@ class Compiler
     pnames = @meth_param_names[mi].split(",")
     ptypes = @meth_param_types[mi].split(",")
     defaults = @meth_has_defaults[mi].split(",")
+    if omit_trailing > 0
+      kept = "".split(",")
+      pk = 0
+      limit = pnames.length - omit_trailing
+      if limit < 0
+        limit = 0
+      end
+      while pk < limit
+        kept.push(pnames[pk])
+        pk = pk + 1
+      end
+      pnames = kept
+    end
 
     # Check if args contain a KeywordHashNode - extract kw pairs
     kw_names = "".split(",")
