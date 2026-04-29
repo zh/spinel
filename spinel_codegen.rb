@@ -9490,6 +9490,108 @@ class Compiler
     ""
   end
 
+  # Walk `nid`'s subtree and collect every `Cls.new(...)` class name
+  # into `out`. Used by detect_poly_returned_types to enumerate the
+  # classes returned (directly or via a temp) from a poly-returning
+  # method body.
+  def collect_constructed_class_names(nid, out)
+    if nid < 0
+      return
+    end
+    if @nd_type[nid] == "CallNode"
+      if @nd_name[nid] == "new"
+        recv = @nd_receiver[nid]
+        if recv >= 0
+          cname = constructor_class_name(recv)
+          if cname != "" && find_class_idx(cname) >= 0
+            obj_t = "obj_" + cname
+            if not_in(obj_t, out) == 1
+              out.push(obj_t)
+            end
+          end
+        end
+      end
+    end
+    # Recurse into the conventional child slots.
+    if @nd_body[nid] >= 0
+      collect_constructed_class_names(@nd_body[nid], out)
+    end
+    stmts = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < stmts.length
+      collect_constructed_class_names(stmts[k], out)
+      k = k + 1
+    end
+    if @nd_expression[nid] >= 0
+      collect_constructed_class_names(@nd_expression[nid], out)
+    end
+    if @nd_predicate[nid] >= 0
+      collect_constructed_class_names(@nd_predicate[nid], out)
+    end
+    if @nd_subsequent[nid] >= 0
+      collect_constructed_class_names(@nd_subsequent[nid], out)
+    end
+    if @nd_else_clause[nid] >= 0
+      collect_constructed_class_names(@nd_else_clause[nid], out)
+    end
+    if @nd_receiver[nid] >= 0
+      collect_constructed_class_names(@nd_receiver[nid], out)
+    end
+    if @nd_arguments[nid] >= 0
+      collect_constructed_class_names(@nd_arguments[nid], out)
+    end
+    args = parse_id_list(@nd_args[nid])
+    k = 0
+    while k < args.length
+      collect_constructed_class_names(args[k], out)
+      k = k + 1
+    end
+    if @nd_left[nid] >= 0
+      collect_constructed_class_names(@nd_left[nid], out)
+    end
+    if @nd_right[nid] >= 0
+      collect_constructed_class_names(@nd_right[nid], out)
+    end
+  end
+
+  def detect_poly_returned_types
+    # Find object types `obj_<C>` constructed inside a method whose
+    # inferred return type is `poly`. The return path boxes the value
+    # into an `sp_RbVal` (`void *` payload); a value-type-eligible
+    # class would emit `sp_box_obj(sp_<C>_new(...), ci)` which feeds a
+    # struct-by-value into a `void *` slot — a C type error. Excluding
+    # such classes from the value-type optimization keeps `<C>` heap-
+    # allocated, so the constructor returns `sp_<C> *` and boxing is
+    # well-typed. Mirrors the ptr_array exclusion (PR #87).
+    @poly_returned_types = "".split(",")
+    mi = 0
+    while mi < @meth_names.length
+      if mi < @meth_return_types.length && @meth_return_types[mi] == "poly"
+        bid = @meth_body_ids[mi]
+        if bid >= 0
+          collect_constructed_class_names(bid, @poly_returned_types)
+        end
+      end
+      mi = mi + 1
+    end
+    ci = 0
+    while ci < @cls_names.length
+      bodies = @cls_meth_bodies[ci].split(";")
+      returns = @cls_meth_returns[ci].split(";")
+      mj = 0
+      while mj < bodies.length
+        if mj < returns.length && returns[mj] == "poly"
+          bid = bodies[mj].to_i
+          if bid >= 0
+            collect_constructed_class_names(bid, @poly_returned_types)
+          end
+        end
+        mj = mj + 1
+      end
+      ci = ci + 1
+    end
+  end
+
   def detect_ptr_array_stored_types
     # Find object types `obj_<C>` that appear as the element type of an
     # array literal. Such an array becomes a `sp_PtrArray *` whose
@@ -9647,6 +9749,7 @@ class Compiler
     auto_register_attr_writers
     detect_param_mutated_types
     detect_ptr_array_stored_types
+    detect_poly_returned_types
     # Multiple passes: value type detection depends on other classes
     2.times do
       i = 0
@@ -9712,6 +9815,20 @@ class Compiler
                 all_val = 0
               end
               psi = psi + 1
+            end
+          end
+          # Exclude classes constructed inside a method whose inferred
+          # return type is `poly`. The poly return path boxes via
+          # `sp_box_obj(sp_<C>_new(...), ci)` — same struct-by-value /
+          # void* mismatch as the ptr_array case (issue #118).
+          if all_val == 1
+            type_str = "obj_" + @cls_names[i]
+            pri = 0
+            while pri < @poly_returned_types.length
+              if @poly_returned_types[pri] == type_str
+                all_val = 0
+              end
+              pri = pri + 1
             end
           end
           if all_val == 1
