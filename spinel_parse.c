@@ -879,10 +879,10 @@ static char *resolve_requires(const char *source, const char *source_path) {
     } else if (q2 && q2 < line_end) {
       quote_char = '\'';
       start = q2 + 1;
-    } else break;
+    } else { scan_from = pos + 1; continue; }
 
     char *end = strchr(start, quote_char);
-    if (!end || end > line_end) break;
+    if (!end || end > line_end) { scan_from = pos + 1; continue; }
 
     size_t path_len = end - start;
     char rel_path[512];
