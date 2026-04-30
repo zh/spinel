@@ -8176,12 +8176,67 @@ class Compiler
     result
   end
 
+  # Map a simple-literal AST node to its canonical type name. Returns ""
+  # for anything that isn't a leaf-literal (hashes, arrays, calls, etc.).
+  # Used by pre_scan_simple_local_writes to seed @scope_names before
+  # scan_locals's first pass runs.
+  def simple_literal_type(nid)
+    if nid < 0
+      return ""
+    end
+    t = @nd_type[nid]
+    if t == "StringNode"
+      return "string"
+    end
+    if t == "IntegerNode"
+      return "int"
+    end
+    if t == "FloatNode"
+      return "float"
+    end
+    if t == "SymbolNode"
+      return "symbol"
+    end
+    if t == "TrueNode"
+      return "bool"
+    end
+    if t == "FalseNode"
+      return "bool"
+    end
+    if t == "NilNode"
+      return "nil"
+    end
+    ""
+  end
+
+  # Pre-populate @scope_names with simple-literal local writes so that
+  # scan_locals's pass-1 inference can resolve LocalVariableReadNode
+  # references during type inference. Without this, hash shorthand
+  # `{first:}` whose key resolves to a previously-written string-valued
+  # local mis-types because find_var_type runs against an empty scope and
+  # falls back to "int". Limited to leaf-literal initializers; method
+  # calls and composite literals still go through the regular passes.
+  def pre_scan_simple_local_writes(stmts)
+    stmts.each { |sid|
+      if @nd_type[sid] == "LocalVariableWriteNode"
+        lname = @nd_name[sid]
+        if find_var_type(lname) == ""
+          st = simple_literal_type(@nd_expression[sid])
+          if st != ""
+            declare_var(lname, st)
+          end
+        end
+      end
+    }
+  end
+
   # ---- Feature detection ----
   def detect_features
     # Set up a temporary scope with main-level locals so feature detection
     # can infer types of local variables correctly
     push_scope
     stmts = get_body_stmts(@root_id)
+    pre_scan_simple_local_writes(stmts)
     lnames = "".split(",")
     ltypes = "".split(",")
     empty_p = "".split(",")
@@ -13209,6 +13264,7 @@ class Compiler
     ltypes = "".split(",")
 
     empty_params = "".split(",")
+    pre_scan_simple_local_writes(stmts)
     stmts.each { |sid|
       if @nd_type[sid] != "DefNode"
         if @nd_type[sid] != "ClassNode"

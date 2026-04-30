@@ -394,7 +394,15 @@ static int flatten(pm_node_t *node) {
     pm_assoc_node_t *n = (pm_assoc_node_t *)node;
     N("AssocNode");
     R("key", n->key);
-    R("value", n->value);
+    /* Hash shorthand `{ x: }` lowers to an AssocNode whose value is a
+       PM_IMPLICIT_NODE wrapping the actual LocalVariableReadNode (or
+       MethodCallNode for an undeclared name). Unwrap one level here so
+       the codegen never sees the implicit wrapper. */
+    pm_node_t *val = n->value;
+    if (val && PM_NODE_TYPE_P(val, PM_IMPLICIT_NODE)) {
+      val = ((pm_implicit_node_t *)val)->value;
+    }
+    R("value", val);
     break;
   }
   case PM_KEYWORD_HASH_NODE: {
