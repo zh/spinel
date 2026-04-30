@@ -6435,6 +6435,16 @@ class Compiler
       scan_new_calls(conds[k])
       k = k + 1
     end
+    # InterpolatedStringNode and friends carry their components in @nd_parts.
+    # Without this, an EmbeddedStatementsNode inside `"#{...}"` is the only
+    # call site for a method whose param type would otherwise widen, and
+    # the param keeps its default `int` => C error at the call site.
+    parts = parse_id_list(@nd_parts[nid])
+    k = 0
+    while k < parts.length
+      scan_new_calls(parts[k])
+      k = k + 1
+    end
   end
 
   def update_ivar_types_from_params
