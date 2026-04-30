@@ -112,6 +112,15 @@ class Compiler
     @cls_parents = "".split(",")
     @cls_ivar_names = "".split(",")
     @cls_ivar_types = "".split(",")
+    # Issue #130: per-ivar flag — was the ivar's first scanned write a
+    # definite-literal expression (IntegerNode, FloatNode, StringNode, etc.)?
+    # `infer_ivar_init_type` falls back to "int" for non-recognized
+    # CallNodes / LocalVariableReadNodes, so trusting the inferred type
+    # alone produces false widening when the codegen widens to poly on
+    # disagreement. The flag distinguishes "concrete literal write" from
+    # "best-guess inference"; only when both old and new writes are
+    # definite-literal do we widen to poly on disagreement.
+    @cls_ivar_init_definite = "".split(",")
     @cls_meth_names = "".split(",")
     @cls_meth_params = "".split(",")
     @cls_meth_ptypes = "".split(",")
@@ -4739,6 +4748,18 @@ class Compiler
     end
     @cls_ivar_names.push(ivar_names)
     @cls_ivar_types.push(ivar_types)
+    # Struct fields are added via attr_*-style fallback (no scanned literal
+    # write yet). Mark each as non-definite (#130).
+    struct_definite = ""
+    sk2 = 0
+    while sk2 < struct_fields.length
+      if sk2 > 0
+        struct_definite = struct_definite + ";"
+      end
+      struct_definite = struct_definite + "0"
+      sk2 = sk2 + 1
+    end
+    @cls_ivar_init_definite.push(struct_definite)
     # Auto-generate initialize method for struct-derived classes
     if struct_fields.length > 0
       init_params = ""
@@ -5277,14 +5298,51 @@ class Compiler
     0
   end
 
-  def add_ivar(ci, iname, itype)
+  def add_ivar(ci, iname, itype, definite = 0)
     if @cls_ivar_names[ci] != ""
       @cls_ivar_names[ci] = @cls_ivar_names[ci] + ";" + iname
       @cls_ivar_types[ci] = @cls_ivar_types[ci] + ";" + itype
+      @cls_ivar_init_definite[ci] = @cls_ivar_init_definite[ci] + ";" + definite.to_s
     else
       @cls_ivar_names[ci] = iname
       @cls_ivar_types[ci] = itype
+      @cls_ivar_init_definite[ci] = definite.to_s
     end
+  end
+
+  # Issue #130: was the AST expression a definite-literal that
+  # `infer_ivar_init_type` types unambiguously? Used by scan_ivars to
+  # decide when to widen a multi-write ivar slot to poly. Only literal
+  # AST kinds count; CallNodes and LocalVariableReadNodes don't, even
+  # if the inference happens to return a known concrete type.
+  def is_definite_ivar_init(nid)
+    if nid < 0
+      return 0
+    end
+    t = @nd_type[nid]
+    if t == "IntegerNode" || t == "FloatNode" || t == "StringNode"
+      return 1
+    end
+    if t == "SymbolNode" || t == "TrueNode" || t == "FalseNode"
+      return 1
+    end
+    0
+  end
+
+  def cls_ivar_definite_flag(ci, iname)
+    names = @cls_ivar_names[ci].split(";")
+    flags = @cls_ivar_init_definite[ci].split(";")
+    k = 0
+    while k < names.length
+      if names[k] == iname
+        if k < flags.length
+          return flags[k].to_i
+        end
+        return 0
+      end
+      k = k + 1
+    end
+    0
   end
 
   def scan_ivars(ci, nid)
@@ -5293,16 +5351,30 @@ class Compiler
     end
     if @nd_type[nid] == "InstanceVariableWriteNode"
       iname = @nd_name[nid]
+      expr_first = @nd_expression[nid]
       if ivar_exists(ci, iname) == 0
-        vtype = infer_ivar_init_type(@nd_expression[nid])
-        add_ivar(ci, iname, vtype)
+        vtype = infer_ivar_init_type(expr_first)
+        add_ivar(ci, iname, vtype, is_definite_ivar_init(expr_first))
       else
-        # Update type if current type is int (default/nil) and new type is better
+        # Issue #130: when the new write is a definite-literal AND the
+        # ivar's first scanned write was also a definite-literal AND the
+        # types disagree, widen to poly. The dual definite-literal gate
+        # avoids false widening on `infer_ivar_init_type`'s "int" fallback
+        # for non-recognized expressions (CallNodes, LocalVariableReadNodes).
+        # Without the gate, spinel_codegen's own ivars (e.g.,
+        # `@current_method_name = "x" + n.to_s`) would falsely widen and
+        # break the bootstrap.
         expr = @nd_expression[nid]
         if expr >= 0
           if @nd_type[expr] != "NilNode"
             vtype = infer_ivar_init_type(expr)
-            if vtype != "int"
+            cur = cls_ivar_type(ci, iname)
+            new_def = is_definite_ivar_init(expr)
+            cur_def = cls_ivar_definite_flag(ci, iname)
+            if new_def == 1 && cur_def == 1 && cur != vtype && cur != "poly"
+              replace_ivar_type(ci, iname, "poly")
+              @needs_rb_value = 1
+            elsif vtype != "int"
               update_ivar_type(ci, iname, vtype)
             end
           end
@@ -5713,6 +5785,7 @@ class Compiler
     @cls_parents.push("")
     @cls_ivar_names.push("")
     @cls_ivar_types.push("")
+    @cls_ivar_init_definite.push("")
     @cls_meth_names.push("")
     @cls_meth_params.push("")
     @cls_meth_ptypes.push("")
@@ -11526,7 +11599,15 @@ class Compiler
               @needs_gc = 1
               emit_raw("  " + self_arrow + ivar + " = " + iv_ctor + ";")
             else
-              val = compile_expr(expr_id_iv)
+              # Issue #130: same poly-slot boxing as the general
+              # InstanceVariableWriteNode emit path (compile_expr branch).
+              # Initialize bodies can introduce one of the disagreeing
+              # writes to a multi-typed ivar.
+              if ivt == "poly"
+                val = box_expr_to_poly(expr_id_iv)
+              else
+                val = compile_expr(expr_id_iv)
+              end
               emit_raw("  " + self_arrow + ivar + " = " + val + ";")
             end
           else
@@ -13226,15 +13307,26 @@ class Compiler
       return self_arrow + sanitize_ivar(@nd_name[nid])
     end
     if t == "InstanceVariableWriteNode"
-      val = compile_expr(@nd_expression[nid])
+      # Issue #130: same poly-slot boxing as the statement-form emit.
+      # Expression form (`x = (@y = expr)`) is rarer but reaches the
+      # same slot through a different compile path.
+      iname_w = @nd_name[nid]
+      ivt_w = ""
+      if @current_class_idx >= 0
+        ivt_w = cls_ivar_type(@current_class_idx, iname_w)
+      end
+      if ivt_w == "poly"
+        val = box_expr_to_poly(@nd_expression[nid])
+      else
+        val = compile_expr(@nd_expression[nid])
+      end
       # Check if in module method
       mi3 = 0
       while mi3 < @module_names.length
         mmod = @module_names[mi3]
         if mmod != ""
           if @current_method_name.start_with?(mmod + "_cls_")
-            iname = @nd_name[nid]
-            cname3 = mmod + "_" + iname[1, iname.length - 1]
+            cname3 = mmod + "_" + iname_w[1, iname_w.length - 1]
             ci3 = find_const_idx(cname3)
             if ci3 >= 0
               return "(cst_" + cname3 + " = " + val + ")"
@@ -13243,7 +13335,7 @@ class Compiler
         end
         mi3 = mi3 + 1
       end
-      return "(" + self_arrow + sanitize_ivar(@nd_name[nid]) + " = " + val + ")"
+      return "(" + self_arrow + sanitize_ivar(iname_w) + " = " + val + ")"
     end
     if t == "ConstantReadNode"
       if @nd_name[nid] == "ARGV"
@@ -19575,7 +19667,16 @@ class Compiler
           return
         end
       end
-      val = compile_expr(expr_id)
+      # Issue #130: poly slot — every concrete-typed RHS must be boxed
+      # to sp_RbVal. Without the box, C compiler sees `sp_RbVal = mrb_int`
+      # (or const char *, etc.) and either rejects the assignment or
+      # silently coerces. Read sites already dispatch through poly-aware
+      # emitters (sp_poly_puts, etc.) that unbox.
+      if ivt == "poly"
+        val = box_expr_to_poly(expr_id)
+      else
+        val = compile_expr(expr_id)
+      end
       # Check if we're in a module class method
       mod_ivar = 0
       mi3 = 0
