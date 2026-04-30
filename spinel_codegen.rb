@@ -5326,6 +5326,37 @@ class Compiler
     if t == "SymbolNode" || t == "TrueNode" || t == "FalseNode"
       return 1
     end
+    # Issue #131: a ternary whose branches are themselves definite is
+    # definite. Lets the #130 multi-write widening rule still fire when
+    # a later concrete write disagrees with an IfNode-typed slot.
+    if t == "IfNode"
+      then_d = 0
+      body = @nd_body[nid]
+      if body >= 0
+        ts = get_stmts(body)
+        if ts.length > 0
+          then_d = is_definite_ivar_init(ts.last)
+        end
+      end
+      else_d = 0
+      sub = @nd_subsequent[nid]
+      if sub >= 0
+        if @nd_type[sub] == "ElseNode"
+          eb = @nd_body[sub]
+          if eb >= 0
+            es = get_stmts(eb)
+            if es.length > 0
+              else_d = is_definite_ivar_init(es.last)
+            end
+          end
+        else
+          else_d = is_definite_ivar_init(sub)
+        end
+      end
+      if then_d == 1 && else_d == 1
+        return 1
+      end
+    end
     0
   end
 
@@ -5539,6 +5570,62 @@ class Compiler
       if vt != ""
         return vt
       end
+    end
+    # Issue #131: ternary / if-as-expression RHS. Recurse into both
+    # branches' last statements and unify with strict comparison.
+    # Cannot delegate to unify_return_type here — that helper has an
+    # "int is default/unresolved" escape hatch (`int + T → T`) which
+    # is correct for method-return inference but exactly the
+    # conflation that bit us in #130: mixing concrete int and
+    # concrete non-int in a ternary needs to widen to poly, not
+    # silently pick the non-int side. nil branches still defer to
+    # the other type so existing nullable widening
+    # (string + nil → string?) flows through update_ivar_type.
+    if t == "IfNode"
+      then_t = "nil"
+      body = @nd_body[nid]
+      if body >= 0
+        ts = get_stmts(body)
+        if ts.length > 0
+          then_t = infer_ivar_init_type(ts.last)
+        end
+      end
+      else_t = "nil"
+      sub = @nd_subsequent[nid]
+      if sub >= 0
+        if @nd_type[sub] == "ElseNode"
+          eb = @nd_body[sub]
+          if eb >= 0
+            es = get_stmts(eb)
+            if es.length > 0
+              else_t = infer_ivar_init_type(es.last)
+            end
+          end
+        else
+          else_t = infer_ivar_init_type(sub)
+        end
+      end
+      if then_t == else_t
+        return then_t
+      end
+      # Nullable widening (`T + nil → T?`, `nil + T → T?`) — match
+      # unify_return_type's behavior locally so a later `infer_type`-
+      # based pass (spinel_codegen.rb:7045) computing the same "T?"
+      # doesn't widen us to poly via update_ivar_type's missing
+      # T + T? → T? handler.
+      if then_t == "nil"
+        if is_nullable_pointer_type(else_t) == 1 && is_nullable_type(else_t) == 0
+          return else_t + "?"
+        end
+        return else_t
+      end
+      if else_t == "nil"
+        if is_nullable_pointer_type(then_t) == 1 && is_nullable_type(then_t) == 0
+          return then_t + "?"
+        end
+        return then_t
+      end
+      return "poly"
     end
     "int"
   end
@@ -18337,6 +18424,44 @@ class Compiler
   end
 
   def box_expr_to_poly(nid)
+    # Issue #131: ternary / if-as-expression whose branches may have
+    # different concrete types. Per-branch box unconditionally — same-
+    # type branches yield a redundant box that still produces correct
+    # sp_RbVal, and mixed-type branches need the per-branch box to
+    # avoid C's pointer/integer ternary-type-mismatch (which lands as
+    # an unsafe cast in the poly slot and segfaults).
+    # Gating on infer_type's "poly" answer would not work: unify_return
+    # _type treats int as default/unresolved (`int + T → T`), so a
+    # genuinely mixed-int-string ternary infers as "string" and the
+    # gate misses it. The pre-#131 emit then `sp_box_str`'d the entire
+    # raw ternary, which is the same UB.
+    if nid >= 0 && @nd_type[nid] == "IfNode"
+      cond = compile_cond_expr(@nd_predicate[nid])
+      then_v = "sp_box_nil()"
+      body = @nd_body[nid]
+      if body >= 0
+        ts = get_stmts(body)
+        if ts.length > 0
+          then_v = box_expr_to_poly(ts.last)
+        end
+      end
+      else_v = "sp_box_nil()"
+      sub = @nd_subsequent[nid]
+      if sub >= 0
+        if @nd_type[sub] == "ElseNode"
+          eb = @nd_body[sub]
+          if eb >= 0
+            es = get_stmts(eb)
+            if es.length > 0
+              else_v = box_expr_to_poly(es.last)
+            end
+          end
+        else
+          else_v = box_expr_to_poly(sub)
+        end
+      end
+      return "(" + cond + " ? " + then_v + " : " + else_v + ")"
+    end
     at = infer_type(nid)
     val = compile_expr(nid)
     if at == "poly"
