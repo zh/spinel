@@ -789,7 +789,20 @@ static int flatten(pm_node_t *node) {
     break;
   }
   case PM_IT_PARAMETERS_NODE:
-    N("ItParametersNode");
+    /* Ruby 3.4 implicit `it` is semantically `_1` — lower to a
+       NumberedParametersNode so the codegen's existing
+       NumberedParametersNode arity path (get_block_param) handles it
+       transparently. The block body's `it` references separately
+       become PM_IT_LOCAL_VARIABLE_READ_NODE, also lowered below. */
+    N("NumberedParametersNode");
+    I("maximum", 1);
+    break;
+  case PM_IT_LOCAL_VARIABLE_READ_NODE:
+    /* `it` inside the block body. Lowered to a regular
+       LocalVariableReadNode named "_1" so it pairs with the
+       lowered NumberedParametersNode { maximum: 1 } above. */
+    N("LocalVariableReadNode");
+    S("name", escape_str((const uint8_t *)"_1", 2));
     break;
   default: {
     /* Fallback: emit unknown node type */
