@@ -9376,11 +9376,7 @@ class Compiler
               while kk < arg_ids.length
                 at = infer_type(arg_ids[kk])
                 if kk < ptypes.length
-                  if ptypes[kk] == "int"
-                    if at != "int"
-                      ptypes[kk] = at
-                    end
-                  end
+                  ptypes[kk] = unify_call_types(ptypes[kk], at, arg_ids[kk])
                 end
                 kk = kk + 1
               end
@@ -19481,6 +19477,11 @@ class Compiler
         at = infer_type(arg_ids[k])
         if k < ptypes.length
           pt = ptypes[k]
+          if pt == "poly"
+            result = result + box_expr_to_poly(arg_ids[k])
+            k = k + 1
+            next
+          end
           if at == "int"
             if is_obj_type(pt) == 1
               # Cast int to object pointer
