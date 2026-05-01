@@ -2209,6 +2209,9 @@ class Compiler
     if mname == "include?"
       return "bool"
     end
+    if mname == "cover?"
+      return "bool"
+    end
     if mname == "match?"
       return "bool"
     end
@@ -16576,6 +16579,30 @@ class Compiler
     ""
   end
 
+  # Resolve the literal RangeNode behind a method receiver, peeking
+  # through a single ParenthesesNode wrap. Returns -1 when the receiver
+  # isn't a literal range — in which case the runtime sp_Range struct is
+  # used and exclude_end isn't tracked.
+  def resolve_literal_range_recv(nid)
+    recv = @nd_receiver[nid]
+    if recv < 0
+      return -1
+    end
+    if @nd_type[recv] == "RangeNode"
+      return recv
+    end
+    if @nd_type[recv] == "ParenthesesNode"
+      pb = @nd_body[recv]
+      if pb >= 0
+        ps = get_stmts(pb)
+        if ps.length > 0 && @nd_type[ps.first] == "RangeNode"
+          return ps.first
+        end
+      end
+    end
+    -1
+  end
+
   def compile_range_method_expr(nid, mname, rc)
     if mname == "first"
       return rc + ".first"
@@ -16583,10 +16610,16 @@ class Compiler
     if mname == "last"
       return rc + ".last"
     end
-    if mname == "include?"
+    # include? / cover? on a numeric range reduce to first <= x <= last
+    # (inclusive form). The two methods are identical for numeric ranges
+    # so they share the same emission. Exclude_end isn't tracked in the
+    # runtime sp_Range struct; non-literal receivers fall back to the
+    # inclusive form (matches length/size).
+    if mname == "include?" || mname == "cover?"
       tmp = new_temp
       emit("  sp_Range " + tmp + " = " + rc + ";")
-      return "(" + compile_arg0(nid) + " >= " + tmp + ".first && " + compile_arg0(nid) + " <= " + tmp + ".last)"
+      arg = compile_arg0(nid)
+      return "(" + arg + " >= " + tmp + ".first && " + arg + " <= " + tmp + ".last)"
     end
     if mname == "to_a"
       @needs_int_array = 1
@@ -16595,20 +16628,7 @@ class Compiler
       # RangeNode (or wrapped in parens). For non-literal Range values
       # held in sp_Range structs, exclude_end is not tracked at runtime
       # and the inclusive form is used.
-      recv = @nd_receiver[nid]
-      range_nid = -1
-      if recv >= 0 && @nd_type[recv] == "RangeNode"
-        range_nid = recv
-      end
-      if recv >= 0 && @nd_type[recv] == "ParenthesesNode"
-        pb = @nd_body[recv]
-        if pb >= 0
-          ps = get_stmts(pb)
-          if ps.length > 0 && @nd_type[ps.first] == "RangeNode"
-            range_nid = ps.first
-          end
-        end
-      end
+      range_nid = resolve_literal_range_recv(nid)
       if range_nid >= 0
         rright = compile_expr(@nd_right[range_nid])
         if range_excl_end(range_nid) == 1
@@ -16622,6 +16642,24 @@ class Compiler
       return "(" + rc + ".last - " + rc + ".first + 1)"
     end
     if mname == "size"
+      return "(" + rc + ".last - " + rc + ".first + 1)"
+    end
+    if mname == "min"
+      return rc + ".first"
+    end
+    if mname == "max"
+      range_nid = resolve_literal_range_recv(nid)
+      if range_nid >= 0 && range_excl_end(range_nid) == 1
+        return "(" + rc + ".last - 1)"
+      end
+      return rc + ".last"
+    end
+    if mname == "count"
+      # Inclusive: last - first + 1. Exclusive (literal): last - first.
+      range_nid = resolve_literal_range_recv(nid)
+      if range_nid >= 0 && range_excl_end(range_nid) == 1
+        return "(" + rc + ".last - " + rc + ".first)"
+      end
       return "(" + rc + ".last - " + rc + ".first + 1)"
     end
     ""
