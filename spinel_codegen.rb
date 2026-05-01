@@ -2174,10 +2174,10 @@ class Compiler
     if mname == "round"
       return "int"
     end
-    if mname == "upcase"
-      return "string"
-    end
-    if mname == "downcase"
+    if mname == "upcase" || mname == "downcase"
+      if recv >= 0 && infer_type(recv) == "symbol"
+        return "symbol"
+      end
       return "string"
     end
     if mname == "swapcase"
@@ -8507,6 +8507,16 @@ class Compiler
         if @nd_receiver[nid] >= 0
           rt = infer_type(@nd_receiver[nid])
           if rt == "string"
+            @needs_sym_intern = 1
+          end
+        end
+      end
+      # `:foo.upcase` / `:foo.downcase` lower to sp_str_upcase /
+      # sp_str_downcase on the symbol's name string and re-intern via
+      # sp_sym_intern. Mark the dynamic-pool path so it gets emitted.
+      if mname == "upcase" || mname == "downcase"
+        if @nd_receiver[nid] >= 0
+          if infer_type(@nd_receiver[nid]) == "symbol"
             @needs_sym_intern = 1
           end
         end
@@ -16672,6 +16682,12 @@ class Compiler
     end
     if mname == "to_sym" || mname == "intern"
       return rc
+    end
+    # Symbol#upcase / Symbol#downcase: lower-case via the str case helper
+    # then re-intern. Naming convention `sp_str_<mname>` lets one branch
+    # handle both — and slots in cleanly for capitalize/swapcase later.
+    if mname == "upcase" || mname == "downcase"
+      return "sp_sym_intern(sp_str_" + mname + "(sp_sym_to_s(" + rc + ")))"
     end
     if mname == "inspect"
       return "sp_str_concat(\":\", sp_sym_to_s(" + rc + "))"
