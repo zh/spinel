@@ -12996,7 +12996,17 @@ class Compiler
                 elsif nrt == "sym_array"
                   types.push("symbol")
                 elsif is_ptr_array_type(nrt) == 1
-                  types.push(ptr_array_elem_type(nrt))
+                  # When the iterated element is itself an array and the
+                  # block uses _1, _2, ... (max >= 2), Ruby destructures
+                  # the yielded sub-array into the numbered slots. Each
+                  # _i then takes the *inner* element type, not the
+                  # outer ptr_array element type.
+                  ptr_elem = ptr_array_elem_type(nrt)
+                  if nmax >= 2 && is_array_type(ptr_elem) == 1
+                    types.push(elem_type_of_array(ptr_elem))
+                  else
+                    types.push(ptr_elem)
+                  end
                 else
                   types.push("int")
                 end
@@ -24057,15 +24067,52 @@ class Compiler
       elem_type = ptr_array_elem_type(rt)
       tmp = new_temp
       bp_tmp = new_temp
+      # Detect numbered-params auto-destructure: `[[1,10]].each { _1; _2 }`
+      # binds _1=1, _2=10 in Ruby. Trigger when the block uses
+      # NumberedParametersNode with maximum >= 2 over an element that is
+      # itself an array we know how to index.
+      blk = @nd_block[nid]
+      bp = blk >= 0 ? @nd_parameters[blk] : -1
+      destruct_n = 0
+      if bp >= 0 && @nd_type[bp] == "NumberedParametersNode"
+        if @nd_value[bp] >= 2 && is_array_type(elem_type) == 1
+          destruct_n = @nd_value[bp]
+        end
+      end
       emit("  for (mrb_int " + tmp + " = 0; " + tmp + " < sp_PtrArray_length(" + rc + "); " + tmp + "++) {")
-      if has_bp == 1
+      if destruct_n > 0
+        elem_pfx = array_c_prefix(elem_type)
         emit("    " + c_type(elem_type) + " " + bp_tmp + " = (" + c_type(elem_type) + ")sp_PtrArray_get(" + rc + ", " + tmp + ");")
-        emit("    lv_" + bp1 + " = " + bp_tmp + ";")
+        # Bounds-check missing slots: when the yielded sub-array is shorter
+        # than `destruct_n`, CRuby fills with nil; the typed-array codegen
+        # has no nil so we default to 0 (the typed-zero analogue). Without
+        # this guard the slot read is OOB into the sub-array's data buffer.
+        dlen_tmp = new_temp
+        emit("    mrb_int " + dlen_tmp + " = sp_" + elem_pfx + "_length(" + bp_tmp + ");")
+        di = 0
+        while di < destruct_n
+          slot = "lv__" + (di + 1).to_s
+          emit("    " + slot + " = (" + dlen_tmp + " > " + di.to_s + ") ? sp_" + elem_pfx + "_get(" + bp_tmp + ", " + di.to_s + ") : 0;")
+          di = di + 1
+        end
+      else
+        if has_bp == 1
+          emit("    " + c_type(elem_type) + " " + bp_tmp + " = (" + c_type(elem_type) + ")sp_PtrArray_get(" + rc + ", " + tmp + ");")
+          emit("    lv_" + bp1 + " = " + bp_tmp + ";")
+        end
       end
       @indent = @indent + 1
       push_scope
-      if has_bp == 1
-        declare_var(bp1, elem_type)
+      if destruct_n > 0
+        di = 0
+        while di < destruct_n
+          declare_var("_" + (di + 1).to_s, elem_type_of_array(elem_type))
+          di = di + 1
+        end
+      else
+        if has_bp == 1
+          declare_var(bp1, elem_type)
+        end
       end
       compile_stmts_body(@nd_body[@nd_block[nid]])
       pop_scope
